@@ -31,6 +31,7 @@ import android.view.WindowInsetsController
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -77,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     private var ytEngineScript: String = ""
     private var adBlockScript: String = ""
     private var pendingDirectSiPayload: String? = null
+    private var lastUaReloadUrl: String = ""
 
     // App Settings
     private var bgPlayEnabled = true
@@ -141,9 +143,9 @@ class MainActivity : AppCompatActivity() {
         btnBgPlay = findViewById(R.id.btnBgPlay)
         btnShield = findViewById(R.id.btnShield)
 
-        // Strict Android 15 / HyperOS status bar & navigation bar safe inset handling (zero overlap!)
+        // Strict Android 15 / HyperOS status bar, nav bar & keyboard (IME) safe inset handling
         ViewCompat.setOnApplyWindowInsetsListener(appContainer) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
             if (isInPip || customView != null) {
                 view.setPadding(0, 0, 0, 0)
             } else {
@@ -283,12 +285,22 @@ class MainActivity : AppCompatActivity() {
         subtitleOverlayContainer.layoutParams = lp
     }
 
-    private fun applySmartUserAgentForUrl(url: String) {
+    private fun isGoogleAuthUrl(url: String): Boolean {
         val lower = url.lowercase()
-        val isGoogleAuth = lower.contains("accounts.google.com") || lower.contains("accounts.youtube.com")
-        val targetUa = if (isGoogleAuth) FIREFOX_LOGIN_UA else CHROME_MOBILE_UA
-        if (webView.settings.userAgentString != targetUa) {
+        return lower.contains("accounts.google.com") ||
+            lower.contains("accounts.youtube.com") ||
+            lower.contains("myaccount.google.com") ||
+            lower.contains("youtube.com/signin") ||
+            lower.contains("youtube.com/account")
+    }
+
+    private fun applySmartUserAgentForUrl(url: String): Boolean {
+        val targetUa = if (isGoogleAuthUrl(url)) FIREFOX_LOGIN_UA else CHROME_MOBILE_UA
+        return if (webView.settings.userAgentString != targetUa) {
             webView.settings.userAgentString = targetUa
+            true
+        } else {
+            false
         }
     }
 
@@ -314,6 +326,9 @@ class MainActivity : AppCompatActivity() {
             userAgentString = CHROME_MOBILE_UA
         }
 
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        webView.requestFocus(View.FOCUS_DOWN)
         webView.addJavascriptInterface(KillerXBridge(), "KillerX")
 
         webView.webViewClient = object : WebViewClient() {
@@ -357,16 +372,53 @@ class MainActivity : AppCompatActivity() {
 
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
+                if (url.startsWith("intent://")) {
+                    // Extract browser_fallback_url if YouTube wraps Sign-In or links in an Android intent URI
+                    try {
+                        val parsed = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                        val fallback = parsed.getStringExtra("browser_fallback_url")
+                        if (!fallback.isNullOrBlank() && (fallback.startsWith("http://") || fallback.startsWith("https://"))) {
+                            applySmartUserAgentForUrl(fallback)
+                            view?.loadUrl(fallback)
+                        }
+                    } catch (_: Exception) {
+                    }
+                    return true
+                }
                 if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                    // Prevent YouTube mobile web from trying to open the official YouTube app via intent://
                     return true
                 }
                 if (adShield && AdBlocker.shouldBlockRequest(url, true)) {
                     updateTopBadges()
                     return true
                 }
-                applySmartUserAgentForUrl(url)
+                val uaChanged = applySmartUserAgentForUrl(url)
+                if (uaChanged && url != lastUaReloadUrl) {
+                    lastUaReloadUrl = url
+                    view?.loadUrl(url)
+                    return true
+                }
                 return false
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (request?.isForMainFrame == true) {
+                    val failUrl = request.url?.toString() ?: ""
+                    if (failUrl.contains("accounts.google.com") || failUrl.contains("accounts.youtube.com")) {
+                        mainHandler.post {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Gmail login page load une na (Anytime Data / WiFi check karanna)",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -405,14 +457,59 @@ class MainActivity : AppCompatActivity() {
                 isUserGesture: Boolean,
                 resultMsg: Message?
             ): Boolean {
-                // Handle Google Sign-in popups inside same WebView, block ad popups
                 val href = view?.hitTestResult?.extra
-                if (!href.isNullOrBlank() && (href.contains("accounts.google.com") || href.contains("youtube.com"))) {
+                if (!href.isNullOrBlank() &&
+                    (href.contains("accounts.google.com") ||
+                        href.contains("accounts.youtube.com") ||
+                        href.contains("youtube.com") ||
+                        href.contains("google.com"))
+                ) {
                     applySmartUserAgentForUrl(href)
                     webView.loadUrl(href)
-                } else if (adShield) {
-                    AdBlocker.recordBlock()
-                    updateTopBadges()
+                    return false
+                }
+                if (resultMsg != null) {
+                    val tempWebView = WebView(this@MainActivity)
+                    var handled = false
+                    fun routeUrl(targetUrl: String) {
+                        if (handled || targetUrl.isBlank()) return
+                        handled = true
+                        if (targetUrl.startsWith("http") &&
+                            (targetUrl.contains("accounts.google.com") ||
+                                targetUrl.contains("accounts.youtube.com") ||
+                                targetUrl.contains("youtube.com") ||
+                                targetUrl.contains("google.com"))
+                        ) {
+                            applySmartUserAgentForUrl(targetUrl)
+                            webView.loadUrl(targetUrl)
+                        } else if (adShield) {
+                            AdBlocker.recordBlock()
+                            updateTopBadges()
+                        }
+                        mainHandler.post {
+                            try {
+                                tempWebView.stopLoading()
+                                tempWebView.destroy()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                    tempWebView.webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(v: WebView?, req: WebResourceRequest?): Boolean {
+                            routeUrl(req?.url?.toString() ?: "")
+                            return true
+                        }
+                        override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
+                            if (!url.isNullOrBlank()) routeUrl(url)
+                        }
+                    }
+                    val transport = resultMsg.obj as? WebView.WebViewTransport
+                    if (transport != null) {
+                        transport.webView = tempWebView
+                        resultMsg.sendToTarget()
+                        return true
+                    }
+                    tempWebView.destroy()
                 }
                 return false
             }
@@ -805,9 +902,10 @@ class MainActivity : AppCompatActivity() {
 
         btnGmailLogin.setOnClickListener {
             dialog.dismiss()
+            lastUaReloadUrl = ""
             applySmartUserAgentForUrl(GOOGLE_LOGIN_URL)
             webView.loadUrl(GOOGLE_LOGIN_URL)
-            Toast.makeText(this, "Sign in with your Gmail account", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Opening Gmail login...", Toast.LENGTH_SHORT).show()
         }
 
         btnEnterPipNow.setOnClickListener {

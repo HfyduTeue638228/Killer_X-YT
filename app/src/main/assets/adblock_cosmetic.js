@@ -4,7 +4,18 @@
 
   try {
     const nativeOpen = window.open;
-    window.open = function () {
+    window.open = function (url) {
+      const target = typeof url === "string" ? url : "";
+      const isTrustedAuth =
+        target.includes("accounts.google.com") ||
+        target.includes("accounts.youtube.com") ||
+        target.includes("youtube.com/signin") ||
+        target.includes("m.youtube.com") ||
+        target.startsWith("/");
+      if (isTrustedAuth && target) {
+        window.location.href = target;
+        return window;
+      }
       if (window.KillerX && window.KillerX.isAdShieldEnabled()) {
         window.KillerX.onJsAdBlocked();
         return null;
