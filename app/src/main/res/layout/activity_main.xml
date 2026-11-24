@@ -5,14 +5,12 @@
     android:layout_height="match_parent"
     android:background="@color/bg_dark">
 
-    <!-- Main App Container (WindowInsets padding applied cleanly in MainActivity for Android 15 / HyperOS) -->
     <LinearLayout
         android:id="@+id/appContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical">
 
-        <!-- Sleek Dedicated Killer X YT Header Bar (No browser URL bar!) -->
         <LinearLayout
             android:id="@+id/topBar"
             android:layout_width="match_parent"
@@ -120,25 +118,15 @@
             android:progressTint="@color/killer_red"
             android:visibility="gone" />
 
-        <!-- Custom Background-Play-Capable WebView -->
-        <com.killerx.yt.KillerXWebView
-            android:id="@+id/webView"
+        <!-- Real Mozilla Firefox GeckoView Engine -->
+        <org.mozilla.geckoview.GeckoView
+            android:id="@+id/geckoView"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="1"
-            android:focusable="true"
-            android:focusableInTouchMode="true" />
+            android:layout_weight="1" />
     </LinearLayout>
 
-    <!-- Fullscreen Video Container -->
-    <FrameLayout
-        android:id="@+id/fullscreenContainer"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="#000000"
-        android:visibility="gone" />
-
-    <!-- Native Sinhala Subtitle Overlay (Visible in Normal, Fullscreen, AND PiP!) -->
+    <!-- Native Sinhala Subtitle Overlay (Always visible in Normal, Fullscreen, AND PiP!) -->
     <LinearLayout
         android:id="@+id/subtitleOverlayContainer"
         android:layout_width="wrap_content"

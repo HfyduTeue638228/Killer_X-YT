@@ -1,7 +1,6 @@
 package com.killerx.yt
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
@@ -13,30 +12,18 @@ import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Message
 import android.util.Rational
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
-import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.FrameLayout
@@ -55,32 +42,34 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
+import org.mozilla.geckoview.AllowOrDeny
+import org.mozilla.geckoview.GeckoResult
+import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebExtension
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var appContainer: LinearLayout
     private lateinit var topBar: LinearLayout
-    private lateinit var webView: KillerXWebView
+    private lateinit var geckoView: GeckoView
     private lateinit var progressBar: ProgressBar
-    private lateinit var fullscreenContainer: FrameLayout
     private lateinit var subtitleOverlayContainer: LinearLayout
     private lateinit var tvOrigSub: TextView
     private lateinit var tvSinhalaSub: TextView
     private lateinit var btnBgPlay: TextView
     private lateinit var btnShield: TextView
 
+    private lateinit var geckoRuntime: GeckoRuntime
+    private lateinit var geckoSession: GeckoSession
+    private var nativePort: WebExtension.Port? = null
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val hideSubRunnable = Runnable { subtitleOverlayContainer.visibility = View.GONE }
 
-    private var customView: View? = null
-    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
-    private var ytEngineScript: String = ""
-    private var adBlockScript: String = ""
-    private var pendingDirectSiPayload: String? = null
-    private var lastUaReloadUrl: String = ""
-
-    // App Settings
+    // Settings
     private var bgPlayEnabled = true
     private var autoPipEnabled = true
     private var ccEnabled = true
@@ -91,10 +80,14 @@ class MainActivity : AppCompatActivity() {
     private var subPosition = "bottom"
     private var subColorHex = "#FFFFFF"
 
-    // Playback & UI state
+    // Live State
+    private var canGoBack = false
+    private var isFullscreen = false
     private var isVideoPlaying = false
     private var currentVideoTitle = "Killer X YT"
     private var isInPip = false
+    private var pageBlockedCount = 0
+    private var totalBlockedCount = 0
     private var lastSourceMode = "Waiting for CC..."
     private var lastOrigText = ""
     private var lastSiText = ""
@@ -105,48 +98,57 @@ class MainActivity : AppCompatActivity() {
         private const val YOUTUBE_HOME = "https://m.youtube.com/"
         private const val GOOGLE_LOGIN_URL =
             "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F"
-
-        // Clean Chrome Mobile UA (without "; wv") for smooth YouTube playback & captions
-        private const val CHROME_MOBILE_UA =
-            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.106 Mobile Safari/537.36"
-
-        // Clean Firefox Mobile UA used specifically on accounts.google.com so Gmail Login works without MicroG!
-        private const val FIREFOX_LOGIN_UA =
-            "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0"
+        private const val EXT_URI = "resource://android/assets/killerx_ext/"
+        private const val EXT_ID = "killerx@killerx.yt"
     }
 
     private val mediaControlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val cmd = intent?.getStringExtra(MediaPlaybackService.EXTRA_CMD) ?: return
-            mainHandler.post {
-                webView.evaluateJavascript(
-                    "window.__kxMediaControl && window.__kxMediaControl(${JSONObject.quote(cmd)});",
-                    null
-                )
-            }
+            sendToExtension(JSONObject().apply {
+                put("type", "mediaControl")
+                put("cmd", cmd)
+            })
         }
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    private val extPortDelegate = object : WebExtension.PortDelegate {
+        override fun onPortMessage(message: Any, port: WebExtension.Port) {
+            val json = message as? JSONObject ?: return
+            handleExtensionMessage(json)
+        }
+
+        override fun onDisconnect(port: WebExtension.Port) {
+            if (nativePort == port) nativePort = null
+        }
+    }
+
+    private val extMessageDelegate = object : WebExtension.MessageDelegate {
+        override fun onConnect(port: WebExtension.Port) {
+            nativePort = port
+            port.setDelegate(extPortDelegate)
+            sendConfigToExtension()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         appContainer = findViewById(R.id.appContainer)
         topBar = findViewById(R.id.topBar)
-        webView = findViewById(R.id.webView)
+        geckoView = findViewById(R.id.geckoView)
         progressBar = findViewById(R.id.progressBar)
-        fullscreenContainer = findViewById(R.id.fullscreenContainer)
         subtitleOverlayContainer = findViewById(R.id.subtitleOverlayContainer)
         tvOrigSub = findViewById(R.id.tvOrigSub)
         tvSinhalaSub = findViewById(R.id.tvSinhalaSub)
         btnBgPlay = findViewById(R.id.btnBgPlay)
         btnShield = findViewById(R.id.btnShield)
 
-        // Strict Android 15 / HyperOS status bar, nav bar & keyboard (IME) safe inset handling
+        // Android 15 / HyperOS safe insets (status bar + nav bar + keyboard IME)
         ViewCompat.setOnApplyWindowInsetsListener(appContainer) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
-            if (isInPip || customView != null) {
+            if (isInPip || isFullscreen) {
                 view.setPadding(0, 0, 0, 0)
             } else {
                 view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
@@ -155,18 +157,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         loadSettings()
-        webView.backgroundPlayEnabled = bgPlayEnabled
         applySubtitleStyle()
         updateTopBadges()
-
-        // Request notification permission on Android 13+ so Lock Screen Background Play controls appear
         requestNotificationPermissionIfNeeded()
-
-        // Offline built-in ad list active immediately (0 KB Anytime Data when YT Package Mode is ON)
-        AdBlocker.init(this, allowAutoDownload = !ytPackageMode)
-
-        ytEngineScript = assets.open("yt_engine.js").bufferedReader().use { it.readText() }
-        adBlockScript = assets.open("adblock_cosmetic.js").bufferedReader().use { it.readText() }
 
         ContextCompat.registerReceiver(
             this,
@@ -175,20 +168,205 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
-        setupWebView()
+        setupGeckoEngine()
         setupControls()
         setupBackNavigation()
 
         val initialUrl = intent?.dataString?.takeIf { it.contains("youtu") } ?: YOUTUBE_HOME
-        webView.loadUrl(initialUrl)
+        geckoSession.loadUri(initialUrl)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val incoming = intent.dataString
         if (!incoming.isNullOrBlank() && incoming.contains("youtu")) {
-            webView.loadUrl(incoming)
+            geckoSession.loadUri(incoming)
         }
+    }
+
+    private fun setupGeckoEngine() {
+        geckoRuntime = GeckoRuntime.getDefault(this)
+
+        val sessionSettings = GeckoSessionSettings.Builder()
+            .usePrivateMode(false)
+            .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+            .build()
+
+        geckoSession = GeckoSession(sessionSettings)
+
+        geckoSession.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+                mainHandler.post {
+                    isFullscreen = fullScreen
+                    if (fullScreen) {
+                        topBar.visibility = View.GONE
+                        progressBar.visibility = View.GONE
+                        appContainer.setPadding(0, 0, 0, 0)
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                        setImmersiveMode(true)
+                    } else {
+                        if (!isInPip) topBar.visibility = View.VISIBLE
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                        setImmersiveMode(false)
+                        ViewCompat.requestApplyInsets(appContainer)
+                    }
+                    applySubtitleStyle()
+                }
+            }
+
+            override fun onTitleChange(session: GeckoSession, title: String?) {
+                val clean = title?.replace(Regex("""\s*-\s*YouTube$""", RegexOption.IGNORE_CASE), "")?.trim()
+                if (!clean.isNullOrBlank()) {
+                    currentVideoTitle = clean
+                }
+            }
+        }
+
+        geckoSession.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onCanGoBack(session: GeckoSession, canGoBackValue: Boolean) {
+                canGoBack = canGoBackValue
+            }
+
+            override fun onLoadRequest(
+                session: GeckoSession,
+                request: GeckoSession.NavigationDelegate.LoadRequest
+            ): GeckoResult<AllowOrDeny> {
+                val uri = request.uri
+                // Block YouTube mobile web from jumping to external intent:// app links
+                if (uri.startsWith("intent://")) {
+                    try {
+                        val parsed = Intent.parseUri(uri, Intent.URI_INTENT_SCHEME)
+                        val fallback = parsed.getStringExtra("browser_fallback_url")
+                        if (!fallback.isNullOrBlank() && fallback.startsWith("http")) {
+                            session.loadUri(fallback)
+                        }
+                    } catch (_: Exception) {
+                    }
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                if (!uri.startsWith("http://") && !uri.startsWith("https://") && !uri.startsWith("about:") && !uri.startsWith("data:")) {
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                // Keep Google Sign-In / YouTube popups inside the same session
+                if (request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW) {
+                    if (uri.contains("accounts.google.com") ||
+                        uri.contains("accounts.youtube.com") ||
+                        uri.contains("youtube.com") ||
+                        uri.contains("google.com")
+                    ) {
+                        session.loadUri(uri)
+                    } else if (adShield) {
+                        recordAdBlocked()
+                    }
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+            }
+        }
+
+        geckoSession.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(session: GeckoSession, url: String) {
+                mainHandler.post {
+                    pageBlockedCount = 0
+                    updateTopBadges()
+                    hideNativeSubtitle()
+                }
+            }
+
+            override fun onProgressChange(session: GeckoSession, progress: Int) {
+                mainHandler.post {
+                    if (isInPip || isFullscreen) {
+                        progressBar.visibility = View.GONE
+                    } else if (progress in 1..99) {
+                        progressBar.visibility = View.VISIBLE
+                        progressBar.progress = progress
+                    } else {
+                        progressBar.visibility = View.GONE
+                    }
+                }
+            }
+        }
+
+        geckoSession.open(geckoRuntime)
+        geckoSession.setActive(true)
+        geckoView.coverUntilFirstPaint(Color.parseColor("#0B0B0F"))
+        geckoView.setSession(geckoSession)
+
+        // Install & connect our built-in Killer X YT Firefox WebExtension
+        geckoRuntime.webExtensionController
+            .ensureBuiltIn(EXT_URI, EXT_ID)
+            .accept(
+                { ext ->
+                    if (ext != null) {
+                        ext.setMessageDelegate(extMessageDelegate, "killerx")
+                    }
+                },
+                { err ->
+                    mainHandler.post {
+                        Toast.makeText(
+                            this,
+                            "CC Engine notice: ${err?.message ?: "init"}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            )
+    }
+
+    private fun sendToExtension(payload: JSONObject) {
+        mainHandler.post {
+            try {
+                nativePort?.postMessage(payload)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun sendConfigToExtension() {
+        sendToExtension(JSONObject().apply {
+            put("type", "config")
+            put("ccEnabled", ccEnabled)
+            put("ytPackageMode", ytPackageMode)
+            put("adShield", adShield)
+            put("bgPlayEnabled", bgPlayEnabled)
+        })
+    }
+
+    private fun handleExtensionMessage(json: JSONObject) {
+        when (json.optString("type")) {
+            "ready" -> sendConfigToExtension()
+            "adBlocked" -> recordAdBlocked()
+            "showSubtitle" -> {
+                val si = json.optString("si", "")
+                val orig = json.optString("orig", "")
+                val mode = json.optString("mode", "YouTube CC")
+                if (si.isNotBlank()) showNativeSubtitle(si, orig, mode)
+            }
+            "hideSubtitle" -> hideNativeSubtitle()
+            "mediaState" -> {
+                val playing = json.optBoolean("playing", false)
+                val title = json.optString("title", "")
+                isVideoPlaying = playing
+                if (title.isNotBlank()) currentVideoTitle = title
+                mainHandler.post {
+                    syncBackgroundService(playing, currentVideoTitle)
+                    if (isInPip && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        buildPipParams()?.let {
+                            try {
+                                setPictureInPictureParams(it)
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun recordAdBlocked() {
+        pageBlockedCount++
+        totalBlockedCount++
+        updateTopBadges()
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -234,20 +412,16 @@ class MainActivity : AppCompatActivity() {
     private fun updateTopBadges() {
         mainHandler.post {
             if (adShield) {
-                btnShield.text = "🛡${AdBlocker.getPageBlocked()}"
+                btnShield.text = "🛡$pageBlockedCount"
                 btnShield.setTextColor(Color.parseColor("#FF4B3A"))
             } else {
                 btnShield.text = "🛡OFF"
                 btnShield.setTextColor(Color.parseColor("#888C9E"))
             }
-
-            if (bgPlayEnabled) {
-                btnBgPlay.text = "BG"
-                btnBgPlay.setTextColor(Color.parseColor("#4ADE80"))
-            } else {
-                btnBgPlay.text = "BG"
-                btnBgPlay.setTextColor(Color.parseColor("#7D8094"))
-            }
+            btnBgPlay.text = "BG"
+            btnBgPlay.setTextColor(
+                Color.parseColor(if (bgPlayEnabled) "#4ADE80" else "#7D8094")
+            )
         }
     }
 
@@ -271,299 +445,28 @@ class MainActivity : AppCompatActivity() {
             lp.marginEnd = (6 * density).toInt()
         } else if (subPosition == "top") {
             lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            lp.topMargin = ((if (customView != null) 16 else 58) * density).toInt()
+            lp.topMargin = ((if (isFullscreen) 16 else 58) * density).toInt()
             lp.bottomMargin = 0
             lp.marginStart = (14 * density).toInt()
             lp.marginEnd = (14 * density).toInt()
         } else {
             lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             lp.topMargin = 0
-            lp.bottomMargin = ((if (customView != null) 24 else 44) * density).toInt()
+            lp.bottomMargin = ((if (isFullscreen) 24 else 44) * density).toInt()
             lp.marginStart = (14 * density).toInt()
             lp.marginEnd = (14 * density).toInt()
         }
         subtitleOverlayContainer.layoutParams = lp
     }
 
-    private fun isGoogleAuthUrl(url: String): Boolean {
-        val lower = url.lowercase()
-        return lower.contains("accounts.google.com") ||
-            lower.contains("accounts.youtube.com") ||
-            lower.contains("myaccount.google.com") ||
-            lower.contains("youtube.com/signin") ||
-            lower.contains("youtube.com/account")
-    }
-
-    private fun applySmartUserAgentForUrl(url: String): Boolean {
-        val targetUa = if (isGoogleAuthUrl(url)) FIREFOX_LOGIN_UA else CHROME_MOBILE_UA
-        return if (webView.settings.userAgentString != targetUa) {
-            webView.settings.userAgentString = targetUa
-            true
-        } else {
-            false
-        }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun setupWebView() {
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-
-        webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            databaseEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            allowFileAccess = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            setSupportZoom(false)
-            builtInZoomControls = false
-            displayZoomControls = false
-            setSupportMultipleWindows(true)
-            javaScriptCanOpenWindowsAutomatically = false
-            userAgentString = CHROME_MOBILE_UA
-        }
-
-        webView.isFocusable = true
-        webView.isFocusableInTouchMode = true
-        webView.requestFocus(View.FOCUS_DOWN)
-        webView.addJavascriptInterface(KillerXBridge(), "KillerX")
-
-        webView.webViewClient = object : WebViewClient() {
-
-            override fun shouldInterceptRequest(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): WebResourceResponse? {
-                val url = request?.url?.toString() ?: return null
-                val isMain = request.isForMainFrame
-
-                // 1. Block all YouTube & external ads
-                if (adShield && AdBlocker.shouldBlockRequest(url, isMain)) {
-                    updateTopBadges()
-                    return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
-                }
-
-                // 2. Native YouTube Sinhala CC (&tlang=si directly on youtube.com -> 0 Anytime Data!)
-                if (ccEnabled && TranslatorEngine.isYouTubeTimedTextUrl(url)) {
-                    val siUrl = TranslatorEngine.toYouTubeSinhalaUrl(url)
-                    val headers = HashMap<String, String>(request.requestHeaders ?: emptyMap())
-                    val cookie = try { CookieManager.getInstance().getCookie(siUrl) } catch (_: Exception) { null }
-                    if (!cookie.isNullOrBlank()) headers["Cookie"] = cookie
-
-                    TranslatorEngine.sniffSubtitleAsync(siUrl, headers) { _, _, cuesJson ->
-                        val payloadStr = JSONObject().apply {
-                            put("url", siUrl)
-                            put("cues", cuesJson)
-                        }.toString()
-                        pendingDirectSiPayload = payloadStr
-                        mainHandler.post {
-                            webView.evaluateJavascript(
-                                "window.__kxReceiveDirectSinhalaTrack && window.__kxReceiveDirectSinhalaTrack(${JSONObject.quote(payloadStr)});",
-                                null
-                            )
-                        }
-                    }
-                }
-                return super.shouldInterceptRequest(view, request)
-            }
-
-            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val url = request?.url?.toString() ?: return false
-                if (url.startsWith("intent://")) {
-                    // Extract browser_fallback_url if YouTube wraps Sign-In or links in an Android intent URI
-                    try {
-                        val parsed = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                        val fallback = parsed.getStringExtra("browser_fallback_url")
-                        if (!fallback.isNullOrBlank() && (fallback.startsWith("http://") || fallback.startsWith("https://"))) {
-                            applySmartUserAgentForUrl(fallback)
-                            view?.loadUrl(fallback)
-                        }
-                    } catch (_: Exception) {
-                    }
-                    return true
-                }
-                if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                    return true
-                }
-                if (adShield && AdBlocker.shouldBlockRequest(url, true)) {
-                    updateTopBadges()
-                    return true
-                }
-                val uaChanged = applySmartUserAgentForUrl(url)
-                if (uaChanged && url != lastUaReloadUrl) {
-                    lastUaReloadUrl = url
-                    view?.loadUrl(url)
-                    return true
-                }
-                return false
-            }
-
-            override fun onReceivedError(
-                view: WebView?,
-                request: WebResourceRequest?,
-                error: WebResourceError?
-            ) {
-                super.onReceivedError(view, request, error)
-                if (request?.isForMainFrame == true) {
-                    val failUrl = request.url?.toString() ?: ""
-                    if (failUrl.contains("accounts.google.com") || failUrl.contains("accounts.youtube.com")) {
-                        mainHandler.post {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Gmail login page load une na (Anytime Data / WiFi check karanna)",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
-                }
-            }
-
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                super.onPageStarted(view, url, favicon)
-                if (!url.isNullOrBlank()) {
-                    applySmartUserAgentForUrl(url)
-                }
-                AdBlocker.resetPageCount()
-                updateTopBadges()
-                pendingDirectSiPayload = null
-                hideNativeSubtitle()
-            }
-
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                CookieManager.getInstance().flush()
-                if (!url.isNullOrBlank() && url.contains("youtube.com")) {
-                    injectEngines()
-                }
-            }
-        }
-
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                if (newProgress in 1..99) {
-                    progressBar.visibility = View.VISIBLE
-                    progressBar.progress = newProgress
-                } else {
-                    progressBar.visibility = View.GONE
-                }
-            }
-
-            override fun onCreateWindow(
-                view: WebView?,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message?
-            ): Boolean {
-                val href = view?.hitTestResult?.extra
-                if (!href.isNullOrBlank() &&
-                    (href.contains("accounts.google.com") ||
-                        href.contains("accounts.youtube.com") ||
-                        href.contains("youtube.com") ||
-                        href.contains("google.com"))
-                ) {
-                    applySmartUserAgentForUrl(href)
-                    webView.loadUrl(href)
-                    return false
-                }
-                if (resultMsg != null) {
-                    val tempWebView = WebView(this@MainActivity)
-                    var handled = false
-                    fun routeUrl(targetUrl: String) {
-                        if (handled || targetUrl.isBlank()) return
-                        handled = true
-                        if (targetUrl.startsWith("http") &&
-                            (targetUrl.contains("accounts.google.com") ||
-                                targetUrl.contains("accounts.youtube.com") ||
-                                targetUrl.contains("youtube.com") ||
-                                targetUrl.contains("google.com"))
-                        ) {
-                            applySmartUserAgentForUrl(targetUrl)
-                            webView.loadUrl(targetUrl)
-                        } else if (adShield) {
-                            AdBlocker.recordBlock()
-                            updateTopBadges()
-                        }
-                        mainHandler.post {
-                            try {
-                                tempWebView.stopLoading()
-                                tempWebView.destroy()
-                            } catch (_: Exception) {
-                            }
-                        }
-                    }
-                    tempWebView.webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(v: WebView?, req: WebResourceRequest?): Boolean {
-                            routeUrl(req?.url?.toString() ?: "")
-                            return true
-                        }
-                        override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
-                            if (!url.isNullOrBlank()) routeUrl(url)
-                        }
-                    }
-                    val transport = resultMsg.obj as? WebView.WebViewTransport
-                    if (transport != null) {
-                        transport.webView = tempWebView
-                        resultMsg.sendToTarget()
-                        return true
-                    }
-                    tempWebView.destroy()
-                }
-                return false
-            }
-
-            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                if (customView != null) {
-                    callback?.onCustomViewHidden()
-                    return
-                }
-                customView = view
-                customViewCallback = callback
-                fullscreenContainer.addView(
-                    view,
-                    FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                )
-                fullscreenContainer.visibility = View.VISIBLE
-                appContainer.visibility = View.GONE
-                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                setImmersiveMode(true)
-                applySubtitleStyle()
-            }
-
-            override fun onHideCustomView() {
-                exitFullscreenVideo()
-            }
-        }
-    }
-
-    private fun injectEngines() {
-        if (adShield) {
-            webView.evaluateJavascript(adBlockScript, null)
-        }
-        webView.evaluateJavascript(ytEngineScript, null)
-        pendingDirectSiPayload?.let { payload ->
-            webView.evaluateJavascript(
-                "window.__kxReceiveDirectSinhalaTrack && window.__kxReceiveDirectSinhalaTrack(${JSONObject.quote(payload)});",
-                null
-            )
-        }
-    }
-
     // -------------------------------------------------------------------------
-    // Picture-in-Picture (PiP) Support (Android 8.0+ / API 26+)
+    // Picture-in-Picture (PiP) Support
     // -------------------------------------------------------------------------
     private fun buildPipParams(): PictureInPictureParams? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
-
-        val builder = PictureInPictureParams.Builder()
-            .setAspectRatio(Rational(16, 9))
-
+        val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
         val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+
         val toggleIntent = Intent(MediaPlaybackService.BROADCAST_MEDIA_CONTROL).apply {
             setPackage(packageName)
             putExtra(MediaPlaybackService.EXTRA_CMD, MediaPlaybackService.CMD_TOGGLE)
@@ -571,25 +474,14 @@ class MainActivity : AppCompatActivity() {
         val togglePi = PendingIntent.getBroadcast(this, 101, toggleIntent, piFlags)
         val iconRes = if (isVideoPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         val label = if (isVideoPlaying) "Pause" else "Play"
-
-        val toggleAction = RemoteAction(
-            Icon.createWithResource(this, iconRes),
-            label,
-            label,
-            togglePi
-        )
+        val toggleAction = RemoteAction(Icon.createWithResource(this, iconRes), label, label, togglePi)
 
         val nextIntent = Intent(MediaPlaybackService.BROADCAST_MEDIA_CONTROL).apply {
             setPackage(packageName)
             putExtra(MediaPlaybackService.EXTRA_CMD, MediaPlaybackService.CMD_NEXT)
         }
         val nextPi = PendingIntent.getBroadcast(this, 102, nextIntent, piFlags)
-        val nextAction = RemoteAction(
-            Icon.createWithResource(this, android.R.drawable.ic_media_next),
-            "Next",
-            "Next",
-            nextPi
-        )
+        val nextAction = RemoteAction(Icon.createWithResource(this, android.R.drawable.ic_media_next), "Next", "Next", nextPi)
 
         builder.setActions(listOf(toggleAction, nextAction))
         return builder.build()
@@ -597,17 +489,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterPipModeNow() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            Toast.makeText(this, "PiP requires Android 8.0 or higher", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "PiP requires Android 8.0+", Toast.LENGTH_SHORT).show()
             return
         }
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
             Toast.makeText(this, "PiP not supported on this device", Toast.LENGTH_SHORT).show()
             return
         }
-        val params = buildPipParams() ?: return
-        try {
-            enterPictureInPictureMode(params)
-        } catch (_: Exception) {
+        buildPipParams()?.let {
+            try {
+                enterPictureInPictureMode(it)
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -624,60 +517,56 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPip = isInPictureInPictureMode
-        topBar.visibility = if (isInPip) View.GONE else View.VISIBLE
+        topBar.visibility = if (isInPip || isFullscreen) View.GONE else View.VISIBLE
         progressBar.visibility = View.GONE
         if (isInPip) {
             appContainer.setPadding(0, 0, 0, 0)
         } else {
             ViewCompat.requestApplyInsets(appContainer)
         }
-        webView.evaluateJavascript("window.__kxSetPipMode && window.__kxSetPipMode($isInPip);", null)
+        sendToExtension(JSONObject().apply {
+            put("type", "setPip")
+            put("inPip", isInPip)
+        })
         applySubtitleStyle()
     }
 
     // -------------------------------------------------------------------------
-    // Background & Screen-Off Foreground Media Service Sync
+    // Background & Screen-Off Playback Service
     // -------------------------------------------------------------------------
     private fun syncBackgroundService(playing: Boolean, title: String) {
         if (!bgPlayEnabled) {
             stopService(Intent(this, MediaPlaybackService::class.java))
             return
         }
-        if (playing) {
-            val svcIntent = Intent(this, MediaPlaybackService::class.java).apply {
-                action = MediaPlaybackService.ACTION_UPDATE
-                putExtra(MediaPlaybackService.EXTRA_TITLE, title)
-                putExtra(MediaPlaybackService.EXTRA_PLAYING, true)
-            }
-            try {
+        val svcIntent = Intent(this, MediaPlaybackService::class.java).apply {
+            action = MediaPlaybackService.ACTION_UPDATE
+            putExtra(MediaPlaybackService.EXTRA_TITLE, title)
+            putExtra(MediaPlaybackService.EXTRA_PLAYING, playing)
+        }
+        try {
+            if (playing) {
                 ContextCompat.startForegroundService(this, svcIntent)
-            } catch (_: Exception) {
-            }
-        } else {
-            // Update notification to Paused state (or stop if not needed)
-            val svcIntent = Intent(this, MediaPlaybackService::class.java).apply {
-                action = MediaPlaybackService.ACTION_UPDATE
-                putExtra(MediaPlaybackService.EXTRA_TITLE, title)
-                putExtra(MediaPlaybackService.EXTRA_PLAYING, false)
-            }
-            try {
+            } else {
                 startService(svcIntent)
-            } catch (_: Exception) {
             }
+        } catch (_: Exception) {
         }
     }
 
     override fun onPause() {
         super.onPause()
-        // CRITICAL: Do NOT pause WebView when Background Play or PiP is active!
-        if (!bgPlayEnabled && !isInPip) {
-            webView.onPause()
+        // Keep GeckoSession active for true Background & Screen-Off Play!
+        if (bgPlayEnabled || isInPip) {
+            geckoSession.setActive(true)
+        } else {
+            geckoSession.setActive(false)
         }
     }
 
     override fun onResume() {
         super.onResume()
-        webView.onResume()
+        geckoSession.setActive(true)
     }
 
     override fun onDestroy() {
@@ -686,21 +575,11 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
         }
         stopService(Intent(this, MediaPlaybackService::class.java))
+        try {
+            geckoSession.close()
+        } catch (_: Exception) {
+        }
         super.onDestroy()
-    }
-
-    private fun exitFullscreenVideo() {
-        if (customView == null) return
-        fullscreenContainer.removeView(customView)
-        customView = null
-        fullscreenContainer.visibility = View.GONE
-        appContainer.visibility = View.VISIBLE
-        customViewCallback?.onCustomViewHidden()
-        customViewCallback = null
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        setImmersiveMode(false)
-        ViewCompat.requestApplyInsets(appContainer)
-        applySubtitleStyle()
     }
 
     @Suppress("DEPRECATION")
@@ -725,15 +604,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupControls() {
-        val goHome: (View) -> Unit = {
-            applySmartUserAgentForUrl(YOUTUBE_HOME)
-            webView.loadUrl(YOUTUBE_HOME)
-        }
+        val goHome: (View) -> Unit = { geckoSession.loadUri(YOUTUBE_HOME) }
         findViewById<ImageView>(R.id.ivBrandLogo).setOnClickListener(goHome)
         findViewById<TextView>(R.id.tvBrandTitle).setOnClickListener(goHome)
 
         findViewById<TextView>(R.id.btnBack).setOnClickListener {
-            if (webView.canGoBack()) webView.goBack()
+            if (canGoBack) geckoSession.goBack()
         }
 
         findViewById<TextView>(R.id.btnPip).setOnClickListener {
@@ -742,9 +618,9 @@ class MainActivity : AppCompatActivity() {
 
         btnBgPlay.setOnClickListener {
             bgPlayEnabled = !bgPlayEnabled
-            webView.backgroundPlayEnabled = bgPlayEnabled
             saveSettings()
             updateTopBadges()
+            sendConfigToExtension()
             if (!bgPlayEnabled) {
                 stopService(Intent(this, MediaPlaybackService::class.java))
             } else if (isVideoPlaying) {
@@ -757,7 +633,7 @@ class MainActivity : AppCompatActivity() {
         btnShield.setOnClickListener {
             Toast.makeText(
                 this,
-                "Killer X Shield: ${if (adShield) "ON" else "OFF"} | Blocked: ${AdBlocker.getPageBlocked()} (Total ${AdBlocker.getTotalBlocked()})",
+                "Killer X Shield (Firefox): ${if (adShield) "ON" else "OFF"} | Blocked: $pageBlockedCount (Total $totalBlockedCount)",
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -771,9 +647,9 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
-                    customView != null -> exitFullscreenVideo()
-                    webView.canGoBack() -> webView.goBack()
-                    else -> moveTaskToBack(true) // Keeps Background Play alive instead of killing app!
+                    isFullscreen -> geckoSession.exitFullScreen()
+                    canGoBack -> geckoSession.goBack()
+                    else -> moveTaskToBack(true)
                 }
             }
         })
@@ -849,8 +725,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         tvDebugStatus.text = buildString {
-            append("BG Play: ${if (bgPlayEnabled) "ON" else "OFF"} | YT Pkg: ${if (ytPackageMode) "ON (0 Anytime)" else "OFF"}")
-            append("\nAds Blocked: ${AdBlocker.getTotalBlocked()} | CC: $lastSourceMode")
+            append("Engine: Mozilla Firefox GeckoView (Gmail Login Ready)")
+            append("\nBG Play: ${if (bgPlayEnabled) "ON" else "OFF"} | YT Pkg: ${if (ytPackageMode) "ON (0 Anytime)" else "OFF"}")
+            append("\nAds Blocked: $totalBlockedCount | CC: $lastSourceMode")
             if (lastOrigText.isNotEmpty()) append("\nOrig: $lastOrigText")
             if (lastSiText.isNotEmpty()) append("\nSI: $lastSiText")
         }
@@ -868,9 +745,6 @@ class MainActivity : AppCompatActivity() {
         val dialog = AlertDialog.Builder(this)
             .setView(view)
             .setPositiveButton("Save") { _, _ ->
-                val shieldChanged = adShield != cbAdShield.isChecked
-                val ytPkgChanged = ytPackageMode != cbYtPackageMode.isChecked
-
                 bgPlayEnabled = cbBgPlay.isChecked
                 autoPipEnabled = cbAutoPip.isChecked
                 ccEnabled = cbEnabled.isChecked
@@ -884,28 +758,21 @@ class MainActivity : AppCompatActivity() {
                     else -> "#FFFFFF"
                 }
 
-                webView.backgroundPlayEnabled = bgPlayEnabled
                 saveSettings()
                 applySubtitleStyle()
                 updateTopBadges()
+                sendConfigToExtension()
 
-                webView.evaluateJavascript(
-                    "window.__kxSetConfig && window.__kxSetConfig($ccEnabled, $ytPackageMode);",
-                    null
-                )
                 if (!ccEnabled) hideNativeSubtitle()
                 if (!bgPlayEnabled) stopService(Intent(this, MediaPlaybackService::class.java))
-                if (shieldChanged || ytPkgChanged) webView.reload()
             }
             .setNegativeButton("Close", null)
             .create()
 
         btnGmailLogin.setOnClickListener {
             dialog.dismiss()
-            lastUaReloadUrl = ""
-            applySmartUserAgentForUrl(GOOGLE_LOGIN_URL)
-            webView.loadUrl(GOOGLE_LOGIN_URL)
-            Toast.makeText(this, "Opening Gmail login...", Toast.LENGTH_SHORT).show()
+            geckoSession.loadUri(GOOGLE_LOGIN_URL)
+            Toast.makeText(this, "Opening Google Sign-In (Firefox Engine)...", Toast.LENGTH_SHORT).show()
         }
 
         btnEnterPipNow.setOnClickListener {
@@ -920,69 +787,9 @@ class MainActivity : AppCompatActivity() {
 
         btnReloadYt.setOnClickListener {
             dialog.dismiss()
-            webView.reload()
+            geckoSession.reload()
         }
 
         dialog.show()
-    }
-
-    inner class KillerXBridge {
-
-        @JavascriptInterface
-        fun isCcEnabled(): Boolean = ccEnabled
-
-        @JavascriptInterface
-        fun isYtPackageMode(): Boolean = ytPackageMode
-
-        @JavascriptInterface
-        fun isAdShieldEnabled(): Boolean = adShield
-
-        @JavascriptInterface
-        fun isBgPlayEnabled(): Boolean = bgPlayEnabled
-
-        @JavascriptInterface
-        fun onJsAdBlocked() {
-            AdBlocker.recordBlock()
-            updateTopBadges()
-        }
-
-        @JavascriptInterface
-        fun onMediaStateChanged(playing: Boolean, title: String) {
-            isVideoPlaying = playing
-            if (title.isNotBlank()) currentVideoTitle = title
-            mainHandler.post {
-                syncBackgroundService(playing, currentVideoTitle)
-                if (isInPip && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    buildPipParams()?.let {
-                        try {
-                            setPictureInPictureParams(it)
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-            }
-        }
-
-        @JavascriptInterface
-        fun showSubtitle(siText: String, origText: String, sourceMode: String) {
-            showNativeSubtitle(siText, origText, sourceMode)
-        }
-
-        @JavascriptInterface
-        fun hideSubtitle() {
-            hideNativeSubtitle()
-        }
-
-        @JavascriptInterface
-        fun translateSingle(reqId: Int, text: String) {
-            TranslatorEngine.translateSingleAsync(text) { translated ->
-                mainHandler.post {
-                    webView.evaluateJavascript(
-                        "window.__kxOnTranslateResult && window.__kxOnTranslateResult($reqId, ${JSONObject.quote(translated)});",
-                        null
-                    )
-                }
-            }
-        }
     }
 }

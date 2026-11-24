@@ -1,1 +1,1 @@
--keepclassmembers class com.killerx.yt.MainActivity$KillerXBridge { *; }
+-keep class org.mozilla.geckoview.** { *; }
