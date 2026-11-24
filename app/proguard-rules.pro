@@ -1,0 +1,1 @@
+-keepclassmembers class com.killerx.yt.MainActivity$KillerXBridge { *; }

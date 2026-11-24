@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/bar_dark">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="10dp"
+            android:text="Killer X YT Settings"
+            android:textColor="@color/killer_red_glow"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <!-- Playback & Account Features -->
+        <CheckBox
+            android:id="@+id/cbBgPlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:buttonTint="@color/killer_red"
+            android:text="Background &amp; Screen-Off Play"
+            android:textColor="@color/green_active" />
+
+        <CheckBox
+            android:id="@+id/cbAutoPip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:buttonTint="@color/killer_red"
+            android:text="Auto Picture-in-Picture on Home"
+            android:textColor="@color/text_primary" />
+
+        <CheckBox
+            android:id="@+id/cbEnabled"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:buttonTint="@color/killer_red"
+            android:text="Enable Sinhala CC Subtitles"
+            android:textColor="@color/text_primary" />
+
+        <CheckBox
+            android:id="@+id/cbYtPackageMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:buttonTint="@color/killer_red"
+            android:text="YouTube Package Mode (0 Anytime Data)"
+            android:textColor="@color/green_active" />
+
+        <CheckBox
+            android:id="@+id/cbDualSub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:buttonTint="@color/killer_red"
+            android:text="Dual Subtitles (Original + Sinhala)"
+            android:textColor="@color/text_primary" />
+
+        <CheckBox
+            android:id="@+id/cbAdShield"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:buttonTint="@color/killer_red"
+            android:text="Block All YouTube Ads"
+            android:textColor="@color/text_primary" />
+
+        <TextView
+            android:id="@+id/tvSizeLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Subtitle Font Size: 18sp"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <SeekBar
+            android:id="@+id/sbFontSize"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="22"
+            android:progress="6"
+            android:progressTint="@color/killer_red"
+            android:thumbTint="@color/killer_red" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Subtitle Position"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <RadioGroup
+            android:id="@+id/rgPosition"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/rbPosBottom"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:buttonTint="@color/killer_red"
+                android:text="Bottom"
+                android:textColor="@color/text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbPosTop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:buttonTint="@color/killer_red"
+                android:text="Top"
+                android:textColor="@color/text_primary" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Subtitle Color"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <RadioGroup
+            android:id="@+id/rgColor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/rbColorWhite"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:buttonTint="@color/killer_red"
+                android:text="White"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/rbColorYellow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:buttonTint="@color/killer_red"
+                android:text="Yellow"
+                android:textColor="#FFE66D" />
+
+            <RadioButton
+                android:id="@+id/rbColorCyan"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:buttonTint="@color/killer_red"
+                android:text="Cyan"
+                android:textColor="#8BE9FD" />
+        </RadioGroup>
+
+        <!-- Account & Action Buttons -->
+        <Button
+            android:id="@+id/btnGmailLogin"
+            android:layout_width="match_parent"
+            android:layout_height="38dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_red_pill"
+            android:text="Sign In / Switch Gmail Account"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnEnterPipNow"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_dark_pill"
+                android:text="Enter PiP Mode"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnTestOverlay"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_dark_pill"
+                android:text="Test Sinhala CC"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnReloadYt"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_shield_pill"
+            android:text="Reload YouTube Page"
+            android:textAllCaps="false"
+            android:textColor="@color/killer_red_glow"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvDebugStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@color/bg_dark"
+            android:padding="8dp"
+            android:text="Status: Ready"
+            android:textColor="@color/green_active"
+            android:textSize="11sp" />
+
+    </LinearLayout>
+</ScrollView>
