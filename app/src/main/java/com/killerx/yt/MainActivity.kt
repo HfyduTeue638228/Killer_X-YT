@@ -49,9 +49,8 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.MediaSession
-import org.mozilla.geckoview.WebExtension
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
     private lateinit var appContainer: LinearLayout
     private lateinit var topBar: LinearLayout
@@ -65,7 +64,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var geckoRuntime: GeckoRuntime
     private lateinit var geckoSession: GeckoSession
-    private var nativePort: WebExtension.Port? = null
     private var activeMediaSession: MediaSession? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -102,33 +100,12 @@ class MainActivity : AppCompatActivity() {
         private const val YOUTUBE_HOME = "https://m.youtube.com/"
         private const val GOOGLE_LOGIN_URL =
             "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F"
-        private const val EXT_URI = "resource://android/assets/killerx_ext/"
-        private const val EXT_ID = "killerx@killerx.yt"
     }
 
     private val mediaControlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val cmd = intent?.getStringExtra(MediaPlaybackService.EXTRA_CMD) ?: return
             handleMediaCommand(cmd)
-        }
-    }
-
-    private val extPortDelegate = object : WebExtension.PortDelegate {
-        override fun onPortMessage(message: Any, port: WebExtension.Port) {
-            val json = message as? JSONObject ?: return
-            handleExtensionMessage(json)
-        }
-
-        override fun onDisconnect(port: WebExtension.Port) {
-            if (nativePort == port) nativePort = null
-        }
-    }
-
-    private val extMessageDelegate = object : WebExtension.MessageDelegate {
-        override fun onConnect(port: WebExtension.Port) {
-            nativePort = port
-            port.setDelegate(extPortDelegate)
-            sendConfigToExtension()
         }
     }
 
@@ -169,12 +146,10 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
-        setupGeckoEngine()
+        val initialUrl = intent?.dataString?.takeIf { it.contains("youtu") } ?: YOUTUBE_HOME
+        setupGeckoEngine(initialUrl)
         setupControls()
         setupBackNavigation()
-
-        val initialUrl = intent?.dataString?.takeIf { it.contains("youtu") } ?: YOUTUBE_HOME
-        geckoSession.loadUri(initialUrl)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -182,6 +157,41 @@ class MainActivity : AppCompatActivity() {
         val incoming = intent.dataString
         if (!incoming.isNullOrBlank() && incoming.contains("youtu")) {
             geckoSession.loadUri(incoming)
+        }
+    }
+
+    override fun buildCurrentConfig(): JSONObject {
+        return JSONObject().apply {
+            put("type", "config")
+            put("ccEnabled", ccEnabled)
+            put("ytPackageMode", ytPackageMode)
+            put("adShield", adShield)
+            put("bgPlayEnabled", bgPlayEnabled)
+        }
+    }
+
+    override fun onBridgeStatusChanged(connected: Boolean) {
+        // Status is reflected in CC Settings debug panel
+    }
+
+    override fun onExtensionMessage(json: JSONObject) {
+        when (json.optString("type")) {
+            "adBlocked" -> recordAdBlocked()
+            "trackLoaded" -> {
+                loadedCueCount = json.optInt("count", 0)
+            }
+            "showSubtitle" -> {
+                val si = json.optString("si", "")
+                val orig = json.optString("orig", "")
+                val mode = json.optString("mode", "YouTube CC")
+                if (si.isNotBlank()) showNativeSubtitle(si, orig, mode)
+            }
+            "hideSubtitle" -> hideNativeSubtitle()
+            "mediaState" -> {
+                val playing = json.optBoolean("playing", false)
+                val title = json.optString("title", "")
+                onPlaybackStateUpdated(playing, title)
+            }
         }
     }
 
@@ -193,13 +203,13 @@ class MainActivity : AppCompatActivity() {
                 MediaPlaybackService.CMD_TOGGLE -> {
                     if (isVideoPlaying) {
                         ms?.pause()
-                        sendToExtension(JSONObject().apply {
+                        ExtensionBridge.send(JSONObject().apply {
                             put("type", "mediaControl")
                             put("cmd", "pause")
                         })
                     } else {
                         ms?.play()
-                        sendToExtension(JSONObject().apply {
+                        ExtensionBridge.send(JSONObject().apply {
                             put("type", "mediaControl")
                             put("cmd", "play")
                         })
@@ -207,27 +217,27 @@ class MainActivity : AppCompatActivity() {
                 }
                 MediaPlaybackService.CMD_NEXT -> {
                     ms?.nextTrack()
-                    sendToExtension(JSONObject().apply {
+                    ExtensionBridge.send(JSONObject().apply {
                         put("type", "mediaControl")
                         put("cmd", "next")
                     })
                 }
                 MediaPlaybackService.CMD_PREV -> {
                     ms?.previousTrack()
-                    sendToExtension(JSONObject().apply {
+                    ExtensionBridge.send(JSONObject().apply {
                         put("type", "mediaControl")
                         put("cmd", "prev")
                     })
                 }
                 MediaPlaybackService.CMD_STOP -> {
                     ms?.pause()
-                    sendToExtension(JSONObject().apply {
+                    ExtensionBridge.send(JSONObject().apply {
                         put("type", "mediaControl")
                         put("cmd", "stop")
                     })
                 }
                 else -> {
-                    sendToExtension(JSONObject().apply {
+                    ExtensionBridge.send(JSONObject().apply {
                         put("type", "mediaControl")
                         put("cmd", cmd)
                     })
@@ -236,7 +246,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupGeckoEngine() {
+    private fun setupGeckoEngine(initialUrl: String) {
         geckoRuntime = GeckoRuntime.getDefault(this)
 
         val sessionSettings = GeckoSessionSettings.Builder()
@@ -246,7 +256,6 @@ class MainActivity : AppCompatActivity() {
 
         geckoSession = GeckoSession(sessionSettings)
 
-        // CRITICAL FIX FOR PiP PLAYBACK: Explicitly allow audible & inaudible autoplay in GeckoView!
         geckoSession.permissionDelegate = object : GeckoSession.PermissionDelegate {
             override fun onContentPermissionRequest(
                 session: GeckoSession,
@@ -263,7 +272,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // NATIVE GECKOVIEW MEDIA SESSION DELEGATE: Real native C++ Play/Pause/PiP sync!
         geckoSession.mediaSessionDelegate = object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
                 activeMediaSession = mediaSession
@@ -398,25 +406,10 @@ class MainActivity : AppCompatActivity() {
         geckoView.coverUntilFirstPaint(Color.parseColor("#0B0B0F"))
         geckoView.setSession(geckoSession)
 
-        // Install & connect our built-in Killer X YT Firefox WebExtension
-        geckoRuntime.webExtensionController
-            .ensureBuiltIn(EXT_URI, EXT_ID)
-            .accept(
-                { ext ->
-                    if (ext != null) {
-                        ext.setMessageDelegate(extMessageDelegate, "killerx")
-                    }
-                },
-                { err ->
-                    mainHandler.post {
-                        Toast.makeText(
-                            this,
-                            "CC Engine notice: ${err?.message ?: "init"}",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            )
+        // Attach process-wide ExtensionBridge BEFORE loading YouTube so cold & warm restarts NEVER miss CC!
+        ExtensionBridge.attach(geckoRuntime, this) {
+            geckoSession.loadUri(initialUrl)
+        }
     }
 
     private fun onPlaybackStateUpdated(playing: Boolean, title: String) {
@@ -431,47 +424,6 @@ class MainActivity : AppCompatActivity() {
                     } catch (_: Exception) {
                     }
                 }
-            }
-        }
-    }
-
-    private fun sendToExtension(payload: JSONObject) {
-        mainHandler.post {
-            try {
-                nativePort?.postMessage(payload)
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    private fun sendConfigToExtension() {
-        sendToExtension(JSONObject().apply {
-            put("type", "config")
-            put("ccEnabled", ccEnabled)
-            put("ytPackageMode", ytPackageMode)
-            put("adShield", adShield)
-            put("bgPlayEnabled", bgPlayEnabled)
-        })
-    }
-
-    private fun handleExtensionMessage(json: JSONObject) {
-        when (json.optString("type")) {
-            "ready" -> sendConfigToExtension()
-            "adBlocked" -> recordAdBlocked()
-            "trackLoaded" -> {
-                loadedCueCount = json.optInt("count", 0)
-            }
-            "showSubtitle" -> {
-                val si = json.optString("si", "")
-                val orig = json.optString("orig", "")
-                val mode = json.optString("mode", "YouTube CC")
-                if (si.isNotBlank()) showNativeSubtitle(si, orig, mode)
-            }
-            "hideSubtitle" -> hideNativeSubtitle()
-            "mediaState" -> {
-                val playing = json.optBoolean("playing", false)
-                val title = json.optString("title", "")
-                onPlaybackStateUpdated(playing, title)
             }
         }
     }
@@ -640,18 +592,17 @@ class MainActivity : AppCompatActivity() {
         } else {
             ViewCompat.requestApplyInsets(appContainer)
         }
-        sendToExtension(JSONObject().apply {
+        ExtensionBridge.send(JSONObject().apply {
             put("type", "setPip")
             put("inPip", isInPip)
         })
         applySubtitleStyle()
 
-        // Seamlessly resume video if surface resize during PiP transition momentarily paused it
         if (isInPip && wasPlayingBeforePip) {
             mainHandler.postDelayed({
                 if (isInPip && !isVideoPlaying) {
                     activeMediaSession?.play()
-                    sendToExtension(JSONObject().apply {
+                    ExtensionBridge.send(JSONObject().apply {
                         put("type", "mediaControl")
                         put("cmd", "play")
                     })
@@ -660,7 +611,7 @@ class MainActivity : AppCompatActivity() {
             mainHandler.postDelayed({
                 if (isInPip && !isVideoPlaying) {
                     activeMediaSession?.play()
-                    sendToExtension(JSONObject().apply {
+                    ExtensionBridge.send(JSONObject().apply {
                         put("type", "mediaControl")
                         put("cmd", "play")
                     })
@@ -694,7 +645,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Keep GeckoSession active for true Background, Screen-Off & PiP Play!
         if (bgPlayEnabled || isInPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
             geckoSession.setActive(true)
         } else {
@@ -705,9 +655,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         geckoSession.setActive(true)
+        ExtensionBridge.pushConfigAndResync()
     }
 
     override fun onDestroy() {
+        ExtensionBridge.detach(this)
         try {
             unregisterReceiver(mediaControlReceiver)
         } catch (_: Exception) {
@@ -758,7 +710,7 @@ class MainActivity : AppCompatActivity() {
             bgPlayEnabled = !bgPlayEnabled
             saveSettings()
             updateTopBadges()
-            sendConfigToExtension()
+            ExtensionBridge.pushConfigAndResync()
             if (!bgPlayEnabled) {
                 stopService(Intent(this, MediaPlaybackService::class.java))
             } else if (isVideoPlaying) {
@@ -863,7 +815,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         tvDebugStatus.text = buildString {
-            append("Bridge: ${if (nativePort != null) "Connected" else "Connecting..."} | Cues: $loadedCueCount")
+            append("Bridge: ${if (ExtensionBridge.isConnected()) "Connected" else "Reconnecting..."} | Cues: $loadedCueCount")
             append("\nBG Play: ${if (bgPlayEnabled) "ON" else "OFF"} | YT Pkg: ${if (ytPackageMode) "ON (0 Anytime)" else "OFF"}")
             append("\nAds Blocked: $totalBlockedCount | CC: $lastSourceMode")
             if (lastOrigText.isNotEmpty()) append("\nOrig: $lastOrigText")
@@ -899,7 +851,7 @@ class MainActivity : AppCompatActivity() {
                 saveSettings()
                 applySubtitleStyle()
                 updateTopBadges()
-                sendConfigToExtension()
+                ExtensionBridge.pushConfigAndResync()
 
                 if (!ccEnabled) hideNativeSubtitle()
                 if (!bgPlayEnabled) stopService(Intent(this, MediaPlaybackService::class.java))

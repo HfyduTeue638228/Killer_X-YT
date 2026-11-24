@@ -6,6 +6,9 @@ let config = {
 };
 
 let nativePort = null;
+let portVerified = false;
+let lastPongTime = 0;
+
 const contentPorts = new Set();
 const ourFetchedUrls = new Set();
 const recentTimedText = new Map();
@@ -13,11 +16,13 @@ const translateCache = new Map();
 let latestTimedTextUrl = "";
 let latestDirectCues = [];
 
-function sendToNative(obj) {
-  if (!nativePort) return;
-  try {
-    nativePort.postMessage(obj);
-  } catch (e) {}
+function applyConfig(msg) {
+  if (!msg || typeof msg !== "object") return;
+  if (typeof msg.ccEnabled === "boolean") config.ccEnabled = msg.ccEnabled;
+  if (typeof msg.ytPackageMode === "boolean") config.ytPackageMode = msg.ytPackageMode;
+  if (typeof msg.adShield === "boolean") config.adShield = msg.adShield;
+  if (typeof msg.bgPlayEnabled === "boolean") config.bgPlayEnabled = msg.bgPlayEnabled;
+  broadcastToContent({ type: "config", config });
 }
 
 function broadcastToContent(msg) {
@@ -30,12 +35,119 @@ function broadcastToContent(msg) {
   }
 }
 
-// Long-lived runtime Ports from content.js (100% reliable in GeckoView without tabs API!)
+function tearDownNativePort() {
+  const old = nativePort;
+  nativePort = null;
+  portVerified = false;
+  if (old) {
+    try {
+      old.disconnect();
+    } catch (e) {}
+  }
+}
+
+function connectNative() {
+  if (nativePort && portVerified) return;
+  tearDownNativePort();
+
+  try {
+    const p = browser.runtime.connectNative("killerx");
+    nativePort = p;
+    portVerified = false;
+
+    p.onMessage.addListener((msg) => {
+      if (nativePort !== p) return;
+      portVerified = true;
+      lastPongTime = Date.now();
+      if (!msg || typeof msg !== "object") return;
+
+      if (msg.type === "pong") return;
+
+      if (msg.type === "config") {
+        applyConfig(msg);
+      } else if (msg.type === "resync") {
+        recentTimedText.clear();
+        broadcastToContent({ type: "config", config });
+        broadcastToContent({ type: "resync" });
+      } else if (msg.type === "mediaControl" || msg.type === "setPip") {
+        broadcastToContent(msg);
+      }
+    });
+
+    p.onDisconnect.addListener(() => {
+      if (nativePort === p) {
+        nativePort = null;
+        portVerified = false;
+      }
+    });
+
+    // Immediately verify the port with a ping + ready
+    p.postMessage({ type: "ping" });
+    p.postMessage({ type: "ready" });
+  } catch (e) {
+    tearDownNativePort();
+  }
+}
+
+// Self-healing send: uses verified Port, or falls back to stateless sendNativeMessage!
+function sendToNative(obj) {
+  if (nativePort && portVerified) {
+    try {
+      nativePort.postMessage(obj);
+      return;
+    } catch (e) {
+      tearDownNativePort();
+    }
+  }
+
+  // Stateless fallback (works even during cold-start race before Port is verified!)
+  try {
+    browser.runtime.sendNativeMessage("killerx", obj).then((reply) => {
+      if (reply && typeof reply === "object") {
+        lastPongTime = Date.now();
+        if (reply.type === "config") applyConfig(reply);
+      }
+    }).catch(() => {});
+  } catch (e) {}
+
+  connectNative();
+}
+
+// Heartbeat every 2.5s: guarantees automatic recovery on cold start OR warm restart!
+connectNative();
+setInterval(() => {
+  const now = Date.now();
+  if (!nativePort || !portVerified || (lastPongTime > 0 && now - lastPongTime > 7000)) {
+    connectNative();
+    // Also fetch latest config via stateless call in case port is still negotiating
+    try {
+      browser.runtime.sendNativeMessage("killerx", { type: "getConfig" }).then((reply) => {
+        if (reply && typeof reply === "object" && reply.type === "config") {
+          lastPongTime = Date.now();
+          applyConfig(reply);
+        }
+      }).catch(() => {});
+    } catch (e) {}
+  } else {
+    try {
+      nativePort.postMessage({ type: "ping" });
+    } catch (e) {
+      tearDownNativePort();
+      connectNative();
+    }
+  }
+}, 2500);
+
+// Long-lived runtime Ports from content.js
 browser.runtime.onConnect.addListener((port) => {
   if (!port || port.name !== "yt-content") return;
   contentPorts.add(port);
 
-  // Immediately push current config & any captured subtitle track
+  // Wake/verify native bridge whenever a YouTube page loads!
+  if (!nativePort || !portVerified) {
+    connectNative();
+  }
+
   try {
     port.postMessage({ type: "config", config });
     if (latestDirectCues.length > 0) {
@@ -51,6 +163,7 @@ browser.runtime.onConnect.addListener((port) => {
     if (msg.type === "clearTrack") {
       latestTimedTextUrl = "";
       latestDirectCues = [];
+      recentTimedText.clear();
       return;
     }
 
@@ -84,35 +197,6 @@ browser.runtime.onConnect.addListener((port) => {
     contentPorts.delete(port);
   });
 });
-
-function connectNative() {
-  if (nativePort) return;
-  try {
-    const p = browser.runtime.connectNative("killerx");
-    nativePort = p;
-    p.onMessage.addListener((msg) => {
-      if (!msg || typeof msg !== "object") return;
-      if (msg.type === "config") {
-        config.ccEnabled = !!msg.ccEnabled;
-        config.ytPackageMode = !!msg.ytPackageMode;
-        config.adShield = !!msg.adShield;
-        config.bgPlayEnabled = !!msg.bgPlayEnabled;
-        broadcastToContent({ type: "config", config });
-      } else if (msg.type === "mediaControl" || msg.type === "setPip") {
-        broadcastToContent(msg);
-      }
-    });
-    p.onDisconnect.addListener(() => {
-      if (nativePort === p) nativePort = null;
-      setTimeout(connectNative, 700);
-    });
-    sendToNative({ type: "ready" });
-  } catch (e) {
-    nativePort = null;
-    setTimeout(connectNative, 700);
-  }
-}
-connectNative();
 
 // =========================================================================
 // 1. REAL FIREFOX NETWORK AD BLOCKER (Zero Google Auth False Positives!)
@@ -299,18 +383,18 @@ browser.webRequest.onCompleted.addListener(
     const siUrl = toYouTubeSinhalaUrl(url);
     const now = Date.now();
     const prev = recentTimedText.get(siUrl);
-    if (prev && now - prev < 8000) return;
+    if (prev && now - prev < 5000) return;
     recentTimedText.set(siUrl, now);
     if (recentTimedText.size > 60) recentTimedText.clear();
 
     latestTimedTextUrl = siUrl;
 
-    // 1. Immediately tell content.js to fetch siUrl SAME-ORIGIN (full cookies + zero Total Cookie Protection issues!)
+    // 1. Immediately tell content.js to fetch siUrl with page's exact first-party cookies!
     broadcastToContent({ type: "timedTextUrl", url: siUrl });
 
     // 2. Also fetch from background.js as backup
     ourFetchedUrls.add(siUrl);
-    setTimeout(() => ourFetchedUrls.delete(siUrl), 12000);
+    setTimeout(() => ourFetchedUrls.delete(siUrl), 10000);
 
     fetch(siUrl, { credentials: "include" })
       .then((r) => (r.ok ? r.text() : ""))

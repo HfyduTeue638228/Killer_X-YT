@@ -9,6 +9,11 @@
     bgPlayEnabled: true
   };
 
+  // Use Firefox's page-principal fetch (content.fetch) so first-party YouTube/Gmail cookies are ALWAYS included!
+  const pageFetch = (typeof content !== "undefined" && typeof content.fetch === "function")
+    ? content.fetch.bind(content)
+    : fetch.bind(window);
+
   let bgPort = null;
   let inPipMode = false;
   let userPaused = false;
@@ -18,10 +23,16 @@
   let reqSeq = 1;
 
   function postBg(msg) {
-    if (!bgPort) return;
+    if (!bgPort) {
+      connectBg();
+      return;
+    }
     try {
       bgPort.postMessage(msg);
-    } catch (e) {}
+    } catch (e) {
+      bgPort = null;
+      connectBg();
+    }
   }
 
   function connectBg() {
@@ -32,16 +43,15 @@
       p.onMessage.addListener(handleBgMessage);
       p.onDisconnect.addListener(() => {
         if (bgPort === p) bgPort = null;
-        setTimeout(connectBg, 800);
+        setTimeout(connectBg, 700);
       });
     } catch (e) {
       bgPort = null;
-      setTimeout(connectBg, 800);
+      setTimeout(connectBg, 700);
     }
   }
   connectBg();
 
-  // Track real taps on screen so manual pause on the video player ALWAYS works
   ["touchstart", "pointerdown", "mousedown"].forEach((ev) => {
     window.addEventListener(ev, () => {
       lastUserPointerTime = Date.now();
@@ -82,7 +92,6 @@
     }, true);
   });
 
-  // Auto-dismiss YouTube "Video paused. Continue watching?" prompt
   setInterval(() => {
     if (!config.bgPlayEnabled && !inPipMode) return;
     document.querySelectorAll("yt-confirm-dialog-renderer, .yt-confirm-dialog-renderer, ytm-confirm-dialog-renderer").forEach((dlg) => {
@@ -228,7 +237,6 @@
 
     v.addEventListener("pause", () => {
       const recentTap = Date.now() - lastUserPointerTime < 900;
-      // If YouTube's background/PiP script forcefully pauses the video without user input, immediately resume!
       if (!userPaused && !recentTap && !v.ended && (inPipMode || Date.now() < autoResumeGuardUntil)) {
         setTimeout(() => {
           if (!userPaused && v.paused && !v.ended) {
@@ -344,7 +352,7 @@
   }
 
   // =========================================================================
-  // 5. 0ms SINHALA CC ENGINE (Same-Origin &tlang=si + Player Track Auto-Discovery + DOM Fallback!)
+  // 5. 0ms SINHALA CC ENGINE (Page-Principal Fetch + Player Auto-Discovery + DOM Fallback!)
   // =========================================================================
   let directSinhalaCues = [];
   let lastSiLine = "";
@@ -477,8 +485,7 @@
     fetchedUrls.add(siUrl);
     if (fetchedUrls.size > 40) fetchedUrls.clear();
 
-    // Same-origin fetch inside m.youtube.com — includes exact cookies + works on YouTube data packages!
-    fetch(siUrl, { credentials: "include" })
+    pageFetch(siUrl, { credentials: "include" })
       .then((r) => (r.ok ? r.text() : ""))
       .then((txt) => {
         const cues = parseTimedText(txt);
@@ -487,12 +494,26 @@
           lastSiLine = "";
           postBg({ type: "trackLoaded", count: cues.length });
           syncDirectTrack();
+        } else if (!siUrl.includes("fmt=json3")) {
+          // Retry once with fmt=json3 if XML returned empty
+          const jsonUrl = siUrl + "&fmt=json3";
+          pageFetch(jsonUrl, { credentials: "include" })
+            .then((r2) => (r2.ok ? r2.text() : ""))
+            .then((txt2) => {
+              const cues2 = parseTimedText(txt2);
+              if (cues2.length > 0) {
+                directSinhalaCues = cues2.slice().sort((a, b) => a.start - b.start);
+                lastSiLine = "";
+                postBg({ type: "trackLoaded", count: cues2.length });
+                syncDirectTrack();
+              }
+            })
+            .catch(() => {});
         }
       })
       .catch(() => {});
   }
 
-  // Auto-discover captionTracks straight from YouTube's player object (works even before user taps CC!)
   function getCurrentVideoId() {
     try {
       const u = new URL(location.href);
@@ -509,7 +530,8 @@
 
     try {
       const pageWin = window.wrappedJSObject || window;
-      const player = (document.getElementById("movie_player") || {}).wrappedJSObject;
+      const playerEl = document.getElementById("movie_player");
+      const player = playerEl ? (playerEl.wrappedJSObject || playerEl) : null;
       let resp = null;
       if (player && typeof player.getPlayerResponse === "function") {
         resp = player.getPlayerResponse();
@@ -524,11 +546,9 @@
         resp.captions.playerCaptionsTracklistRenderer.captionTracks;
 
       if (tracks && tracks.length > 0) {
-        // Verify track matches current video ID
         const respVid = resp.videoDetails && resp.videoDetails.videoId;
         if (respVid && respVid !== vid) return;
 
-        // Prefer Sinhala -> English -> any available track
         let chosen = null;
         for (let i = 0; i < tracks.length; i++) {
           const t = tracks[i];
@@ -550,23 +570,10 @@
     } catch (e) {}
   }
 
-  function isYouTubeCcExplicitlyOff() {
-    // Only consider CC off if there are NO visible captions AND the button explicitly says aria-pressed="false"
-    if (document.querySelector(".ytp-caption-segment")) return false;
-    const btn = document.querySelector(".ytp-subtitles-button, button.ytm-closed-captioning-button");
-    return !!(btn && btn.getAttribute("aria-pressed") === "false");
-  }
-
+  // Always show Sinhala CC whenever Killer X YT's CC toggle is ON & a video has captions!
+  // (Fixes the bug where YouTube defaults its own CC button to OFF after reopening the app.)
   function syncDirectTrack() {
     if (!config.ccEnabled || directSinhalaCues.length === 0) return;
-
-    if (isYouTubeCcExplicitlyOff()) {
-      if (lastSiLine !== "") {
-        lastSiLine = "";
-        postBg({ type: "hideSubtitle" });
-      }
-      return;
-    }
 
     const v = getMainVideo();
     if (!v) return;
@@ -611,13 +618,11 @@
     if (!clean || clean === lastDomText) return;
     lastDomText = clean;
 
-    // Always display if captions are already Sinhala
     if (/[\u0D80-\u0DFF]/.test(clean)) {
       postBg({ type: "showSubtitle", si: clean, orig: "", mode: "YouTube Sinhala CC" });
       return;
     }
 
-    // If YT Package Mode is OFF, fall back to Google Translate
     if (!config.ytPackageMode) {
       const id = reqSeq++;
       pendingTranslates.set(id, (translated) => {
@@ -652,6 +657,18 @@
         lastSiLine = "";
         postBg({ type: "hideSubtitle" });
       }
+    } else if (msg.type === "resync") {
+      // MainActivity just reopened! Re-emit current subtitle & re-discover if needed.
+      lastSiLine = "";
+      lastDomText = "";
+      if (directSinhalaCues.length > 0) {
+        postBg({ type: "trackLoaded", count: directSinhalaCues.length });
+        syncDirectTrack();
+      } else {
+        lastDiscoveredVideoId = "";
+        fetchedUrls.clear();
+        tryDiscoverCaptionTrackFromPlayer();
+      }
     } else if (msg.type === "timedTextUrl" && msg.url) {
       fetchSinhalaSameOrigin(msg.url);
     } else if (msg.type === "directSinhalaTrack" && Array.isArray(msg.cues) && msg.cues.length > 0) {
@@ -673,7 +690,7 @@
 
   setInterval(checkNavigation, 350);
   setInterval(attachAntiAutoPauseGuard, 500);
-  setInterval(tryDiscoverCaptionTrackFromPlayer, 900);
+  setInterval(tryDiscoverCaptionTrackFromPlayer, 800);
   setInterval(skipYouTubeAds, 250);
   setInterval(reportMediaState, 500);
   setInterval(syncDirectTrack, 120);
