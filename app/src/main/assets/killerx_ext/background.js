@@ -6,9 +6,12 @@ let config = {
 };
 
 let nativePort = null;
+const contentPorts = new Set();
 const ourFetchedUrls = new Set();
 const recentTimedText = new Map();
 const translateCache = new Map();
+let latestTimedTextUrl = "";
+let latestDirectCues = [];
 
 function sendToNative(obj) {
   if (!nativePort) return;
@@ -17,38 +20,96 @@ function sendToNative(obj) {
   } catch (e) {}
 }
 
-function broadcastToYouTubeTabs(msg) {
-  browser.tabs.query({}).then((tabs) => {
-    for (const t of tabs) {
-      if (t && typeof t.id === "number") {
-        browser.tabs.sendMessage(t.id, msg).catch(() => {});
-      }
+function broadcastToContent(msg) {
+  for (const port of Array.from(contentPorts)) {
+    try {
+      port.postMessage(msg);
+    } catch (e) {
+      contentPorts.delete(port);
     }
-  }).catch(() => {});
+  }
 }
 
-function connectNative() {
+// Long-lived runtime Ports from content.js (100% reliable in GeckoView without tabs API!)
+browser.runtime.onConnect.addListener((port) => {
+  if (!port || port.name !== "yt-content") return;
+  contentPorts.add(port);
+
+  // Immediately push current config & any captured subtitle track
   try {
-    nativePort = browser.runtime.connectNative("killerx");
-    nativePort.onMessage.addListener((msg) => {
+    port.postMessage({ type: "config", config });
+    if (latestDirectCues.length > 0) {
+      port.postMessage({ type: "directSinhalaTrack", cues: latestDirectCues });
+    } else if (latestTimedTextUrl) {
+      port.postMessage({ type: "timedTextUrl", url: latestTimedTextUrl });
+    }
+  } catch (e) {}
+
+  port.onMessage.addListener((msg) => {
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "clearTrack") {
+      latestTimedTextUrl = "";
+      latestDirectCues = [];
+      return;
+    }
+
+    if (msg.type === "translateSingle") {
+      if (config.ytPackageMode) {
+        try {
+          port.postMessage({ type: "translateResult", reqId: msg.reqId, translated: "" });
+        } catch (e) {}
+        return;
+      }
+      translateFallback(msg.text).then((translated) => {
+        try {
+          port.postMessage({ type: "translateResult", reqId: msg.reqId, translated });
+        } catch (e) {}
+      });
+      return;
+    }
+
+    if (
+      msg.type === "showSubtitle" ||
+      msg.type === "hideSubtitle" ||
+      msg.type === "mediaState" ||
+      msg.type === "adBlocked" ||
+      msg.type === "trackLoaded"
+    ) {
+      sendToNative(msg);
+    }
+  });
+
+  port.onDisconnect.addListener(() => {
+    contentPorts.delete(port);
+  });
+});
+
+function connectNative() {
+  if (nativePort) return;
+  try {
+    const p = browser.runtime.connectNative("killerx");
+    nativePort = p;
+    p.onMessage.addListener((msg) => {
       if (!msg || typeof msg !== "object") return;
       if (msg.type === "config") {
         config.ccEnabled = !!msg.ccEnabled;
         config.ytPackageMode = !!msg.ytPackageMode;
         config.adShield = !!msg.adShield;
         config.bgPlayEnabled = !!msg.bgPlayEnabled;
-        broadcastToYouTubeTabs({ type: "config", config });
+        broadcastToContent({ type: "config", config });
       } else if (msg.type === "mediaControl" || msg.type === "setPip") {
-        broadcastToYouTubeTabs(msg);
+        broadcastToContent(msg);
       }
     });
-    nativePort.onDisconnect.addListener(() => {
-      nativePort = null;
-      setTimeout(connectNative, 1500);
+    p.onDisconnect.addListener(() => {
+      if (nativePort === p) nativePort = null;
+      setTimeout(connectNative, 700);
     });
     sendToNative({ type: "ready" });
   } catch (e) {
-    setTimeout(connectNative, 1500);
+    nativePort = null;
+    setTimeout(connectNative, 700);
   }
 }
 connectNative();
@@ -122,13 +183,7 @@ browser.webRequest.onBeforeRequest.addListener(
     try {
       const parsed = new URL(url);
       const host = parsed.hostname.toLowerCase();
-
-      if (isAdHost(host)) {
-        sendToNative({ type: "adBlocked" });
-        return { cancel: true };
-      }
-
-      if (AD_PATH_RE.test(url)) {
+      if (isAdHost(host) || AD_PATH_RE.test(url)) {
         sendToNative({ type: "adBlocked" });
         return { cancel: true };
       }
@@ -244,26 +299,27 @@ browser.webRequest.onCompleted.addListener(
     const siUrl = toYouTubeSinhalaUrl(url);
     const now = Date.now();
     const prev = recentTimedText.get(siUrl);
-    if (prev && now - prev < 10000) return;
+    if (prev && now - prev < 8000) return;
     recentTimedText.set(siUrl, now);
     if (recentTimedText.size > 60) recentTimedText.clear();
 
+    latestTimedTextUrl = siUrl;
+
+    // 1. Immediately tell content.js to fetch siUrl SAME-ORIGIN (full cookies + zero Total Cookie Protection issues!)
+    broadcastToContent({ type: "timedTextUrl", url: siUrl });
+
+    // 2. Also fetch from background.js as backup
     ourFetchedUrls.add(siUrl);
-    setTimeout(() => ourFetchedUrls.delete(siUrl), 15000);
+    setTimeout(() => ourFetchedUrls.delete(siUrl), 12000);
 
     fetch(siUrl, { credentials: "include" })
       .then((r) => (r.ok ? r.text() : ""))
       .then((txt) => {
         const cues = parseTimedText(txt);
         if (cues.length > 0) {
-          const payload = { type: "directSinhalaTrack", cues };
-          if (typeof details.tabId === "number" && details.tabId >= 0) {
-            browser.tabs.sendMessage(details.tabId, payload).catch(() => {
-              broadcastToYouTubeTabs(payload);
-            });
-          } else {
-            broadcastToYouTubeTabs(payload);
-          }
+          latestDirectCues = cues;
+          broadcastToContent({ type: "directSinhalaTrack", cues });
+          sendToNative({ type: "trackLoaded", count: cues.length });
         }
       })
       .catch(() => {});
@@ -272,7 +328,7 @@ browser.webRequest.onCompleted.addListener(
 );
 
 // =========================================================================
-// 3. CONTENT SCRIPT <-> NATIVE BRIDGE + FALLBACK TRANSLATOR
+// 3. FALLBACK TRANSLATOR (When YT Package Mode is OFF)
 // =========================================================================
 async function translateFallback(text) {
   const clean = (text || "").replace(/\s+/g, " ").trim();
@@ -295,31 +351,3 @@ async function translateFallback(text) {
     return "";
   }
 }
-
-browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || typeof msg !== "object") return false;
-
-  if (msg.type === "getConfig") {
-    sendResponse({ config });
-    return false;
-  }
-
-  if (msg.type === "translateSingle") {
-    if (config.ytPackageMode) {
-      sendResponse({ translated: "" });
-      return false;
-    }
-    translateFallback(msg.text).then((translated) => sendResponse({ translated }));
-    return true;
-  }
-
-  if (
-    msg.type === "showSubtitle" ||
-    msg.type === "hideSubtitle" ||
-    msg.type === "mediaState" ||
-    msg.type === "adBlocked"
-  ) {
-    sendToNative(msg);
-  }
-  return false;
-});

@@ -14,7 +14,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="10dp"
-            android:text="Killer X YT v2.0 (GeckoView)"
+            android:text="Killer X YT v2.1 (GeckoView)"
             android:textColor="@color/killer_red_glow"
             android:textSize="17sp"
             android:textStyle="bold" />

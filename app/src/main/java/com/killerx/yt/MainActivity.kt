@@ -48,6 +48,7 @@ import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.MediaSession
 import org.mozilla.geckoview.WebExtension
 
 class MainActivity : AppCompatActivity() {
@@ -65,6 +66,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var geckoRuntime: GeckoRuntime
     private lateinit var geckoSession: GeckoSession
     private var nativePort: WebExtension.Port? = null
+    private var activeMediaSession: MediaSession? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val hideSubRunnable = Runnable { subtitleOverlayContainer.visibility = View.GONE }
@@ -84,10 +86,12 @@ class MainActivity : AppCompatActivity() {
     private var canGoBack = false
     private var isFullscreen = false
     private var isVideoPlaying = false
+    private var wasPlayingBeforePip = false
     private var currentVideoTitle = "Killer X YT"
     private var isInPip = false
     private var pageBlockedCount = 0
     private var totalBlockedCount = 0
+    private var loadedCueCount = 0
     private var lastSourceMode = "Waiting for CC..."
     private var lastOrigText = ""
     private var lastSiText = ""
@@ -105,10 +109,7 @@ class MainActivity : AppCompatActivity() {
     private val mediaControlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val cmd = intent?.getStringExtra(MediaPlaybackService.EXTRA_CMD) ?: return
-            sendToExtension(JSONObject().apply {
-                put("type", "mediaControl")
-                put("cmd", cmd)
-            })
+            handleMediaCommand(cmd)
         }
     }
 
@@ -184,6 +185,57 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun handleMediaCommand(cmd: String) {
+        mainHandler.post {
+            geckoSession.setActive(true)
+            val ms = activeMediaSession
+            when (cmd) {
+                MediaPlaybackService.CMD_TOGGLE -> {
+                    if (isVideoPlaying) {
+                        ms?.pause()
+                        sendToExtension(JSONObject().apply {
+                            put("type", "mediaControl")
+                            put("cmd", "pause")
+                        })
+                    } else {
+                        ms?.play()
+                        sendToExtension(JSONObject().apply {
+                            put("type", "mediaControl")
+                            put("cmd", "play")
+                        })
+                    }
+                }
+                MediaPlaybackService.CMD_NEXT -> {
+                    ms?.nextTrack()
+                    sendToExtension(JSONObject().apply {
+                        put("type", "mediaControl")
+                        put("cmd", "next")
+                    })
+                }
+                MediaPlaybackService.CMD_PREV -> {
+                    ms?.previousTrack()
+                    sendToExtension(JSONObject().apply {
+                        put("type", "mediaControl")
+                        put("cmd", "prev")
+                    })
+                }
+                MediaPlaybackService.CMD_STOP -> {
+                    ms?.pause()
+                    sendToExtension(JSONObject().apply {
+                        put("type", "mediaControl")
+                        put("cmd", "stop")
+                    })
+                }
+                else -> {
+                    sendToExtension(JSONObject().apply {
+                        put("type", "mediaControl")
+                        put("cmd", cmd)
+                    })
+                }
+            }
+        }
+    }
+
     private fun setupGeckoEngine() {
         geckoRuntime = GeckoRuntime.getDefault(this)
 
@@ -193,6 +245,61 @@ class MainActivity : AppCompatActivity() {
             .build()
 
         geckoSession = GeckoSession(sessionSettings)
+
+        // CRITICAL FIX FOR PiP PLAYBACK: Explicitly allow audible & inaudible autoplay in GeckoView!
+        geckoSession.permissionDelegate = object : GeckoSession.PermissionDelegate {
+            override fun onContentPermissionRequest(
+                session: GeckoSession,
+                perm: GeckoSession.PermissionDelegate.ContentPermission
+            ): GeckoResult<Int> {
+                return when (perm.permission) {
+                    GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE,
+                    GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE,
+                    GeckoSession.PermissionDelegate.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS ->
+                        GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW)
+                    else ->
+                        GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
+                }
+            }
+        }
+
+        // NATIVE GECKOVIEW MEDIA SESSION DELEGATE: Real native C++ Play/Pause/PiP sync!
+        geckoSession.mediaSessionDelegate = object : MediaSession.Delegate {
+            override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
+                activeMediaSession = mediaSession
+            }
+
+            override fun onDeactivated(session: GeckoSession, mediaSession: MediaSession) {
+                if (activeMediaSession == mediaSession) activeMediaSession = null
+                onPlaybackStateUpdated(false, currentVideoTitle)
+            }
+
+            override fun onMetadata(
+                session: GeckoSession,
+                mediaSession: MediaSession,
+                meta: MediaSession.Metadata
+            ) {
+                activeMediaSession = mediaSession
+                if (!meta.title.isNullOrBlank()) {
+                    currentVideoTitle = meta.title!!
+                    if (isVideoPlaying) syncBackgroundService(true, currentVideoTitle)
+                }
+            }
+
+            override fun onPlay(session: GeckoSession, mediaSession: MediaSession) {
+                activeMediaSession = mediaSession
+                onPlaybackStateUpdated(true, currentVideoTitle)
+            }
+
+            override fun onPause(session: GeckoSession, mediaSession: MediaSession) {
+                activeMediaSession = mediaSession
+                onPlaybackStateUpdated(false, currentVideoTitle)
+            }
+
+            override fun onStop(session: GeckoSession, mediaSession: MediaSession) {
+                onPlaybackStateUpdated(false, currentVideoTitle)
+            }
+        }
 
         geckoSession.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
@@ -232,7 +339,6 @@ class MainActivity : AppCompatActivity() {
                 request: GeckoSession.NavigationDelegate.LoadRequest
             ): GeckoResult<AllowOrDeny> {
                 val uri = request.uri
-                // Block YouTube mobile web from jumping to external intent:// app links
                 if (uri.startsWith("intent://")) {
                     try {
                         val parsed = Intent.parseUri(uri, Intent.URI_INTENT_SCHEME)
@@ -247,7 +353,6 @@ class MainActivity : AppCompatActivity() {
                 if (!uri.startsWith("http://") && !uri.startsWith("https://") && !uri.startsWith("about:") && !uri.startsWith("data:")) {
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
-                // Keep Google Sign-In / YouTube popups inside the same session
                 if (request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW) {
                     if (uri.contains("accounts.google.com") ||
                         uri.contains("accounts.youtube.com") ||
@@ -268,6 +373,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStart(session: GeckoSession, url: String) {
                 mainHandler.post {
                     pageBlockedCount = 0
+                    loadedCueCount = 0
                     updateTopBadges()
                     hideNativeSubtitle()
                 }
@@ -313,6 +419,22 @@ class MainActivity : AppCompatActivity() {
             )
     }
 
+    private fun onPlaybackStateUpdated(playing: Boolean, title: String) {
+        isVideoPlaying = playing
+        if (title.isNotBlank()) currentVideoTitle = title
+        mainHandler.post {
+            syncBackgroundService(playing, currentVideoTitle)
+            if (isInPip && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                buildPipParams()?.let {
+                    try {
+                        setPictureInPictureParams(it)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
+    }
+
     private fun sendToExtension(payload: JSONObject) {
         mainHandler.post {
             try {
@@ -336,6 +458,9 @@ class MainActivity : AppCompatActivity() {
         when (json.optString("type")) {
             "ready" -> sendConfigToExtension()
             "adBlocked" -> recordAdBlocked()
+            "trackLoaded" -> {
+                loadedCueCount = json.optInt("count", 0)
+            }
             "showSubtitle" -> {
                 val si = json.optString("si", "")
                 val orig = json.optString("orig", "")
@@ -346,19 +471,7 @@ class MainActivity : AppCompatActivity() {
             "mediaState" -> {
                 val playing = json.optBoolean("playing", false)
                 val title = json.optString("title", "")
-                isVideoPlaying = playing
-                if (title.isNotBlank()) currentVideoTitle = title
-                mainHandler.post {
-                    syncBackgroundService(playing, currentVideoTitle)
-                    if (isInPip && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        buildPipParams()?.let {
-                            try {
-                                setPictureInPictureParams(it)
-                            } catch (_: Exception) {
-                            }
-                        }
-                    }
-                }
+                onPlaybackStateUpdated(playing, title)
             }
         }
     }
@@ -496,6 +609,8 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "PiP not supported on this device", Toast.LENGTH_SHORT).show()
             return
         }
+        wasPlayingBeforePip = isVideoPlaying
+        geckoSession.setActive(true)
         buildPipParams()?.let {
             try {
                 enterPictureInPictureMode(it)
@@ -517,6 +632,7 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPip = isInPictureInPictureMode
+        geckoSession.setActive(true)
         topBar.visibility = if (isInPip || isFullscreen) View.GONE else View.VISIBLE
         progressBar.visibility = View.GONE
         if (isInPip) {
@@ -529,6 +645,28 @@ class MainActivity : AppCompatActivity() {
             put("inPip", isInPip)
         })
         applySubtitleStyle()
+
+        // Seamlessly resume video if surface resize during PiP transition momentarily paused it
+        if (isInPip && wasPlayingBeforePip) {
+            mainHandler.postDelayed({
+                if (isInPip && !isVideoPlaying) {
+                    activeMediaSession?.play()
+                    sendToExtension(JSONObject().apply {
+                        put("type", "mediaControl")
+                        put("cmd", "play")
+                    })
+                }
+            }, 250L)
+            mainHandler.postDelayed({
+                if (isInPip && !isVideoPlaying) {
+                    activeMediaSession?.play()
+                    sendToExtension(JSONObject().apply {
+                        put("type", "mediaControl")
+                        put("cmd", "play")
+                    })
+                }
+            }, 650L)
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -556,8 +694,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Keep GeckoSession active for true Background & Screen-Off Play!
-        if (bgPlayEnabled || isInPip) {
+        // Keep GeckoSession active for true Background, Screen-Off & PiP Play!
+        if (bgPlayEnabled || isInPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
             geckoSession.setActive(true)
         } else {
             geckoSession.setActive(false)
@@ -725,7 +863,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         tvDebugStatus.text = buildString {
-            append("Engine: Mozilla Firefox GeckoView (Gmail Login Ready)")
+            append("Bridge: ${if (nativePort != null) "Connected" else "Connecting..."} | Cues: $loadedCueCount")
             append("\nBG Play: ${if (bgPlayEnabled) "ON" else "OFF"} | YT Pkg: ${if (ytPackageMode) "ON (0 Anytime)" else "OFF"}")
             append("\nAds Blocked: $totalBlockedCount | CC: $lastSourceMode")
             if (lastOrigText.isNotEmpty()) append("\nOrig: $lastOrigText")
