@@ -150,6 +150,11 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         setupGeckoEngine(initialUrl)
         setupControls()
         setupBackNavigation()
+
+        // Silently check GitHub Releases for updates (Wi-Fi only when YT Package Mode is ON -> 0 Anytime Data!)
+        mainHandler.postDelayed({
+            AppUpdater.checkForUpdate(this, manual = false, ytPackageMode = ytPackageMode)
+        }, 3000L)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -656,6 +661,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         super.onResume()
         geckoSession.setActive(true)
         ExtensionBridge.pushConfigAndResync()
+        AppUpdater.resumePendingInstallIfPermitted(this)
     }
 
     override fun onDestroy() {
@@ -795,6 +801,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         val btnEnterPipNow = view.findViewById<Button>(R.id.btnEnterPipNow)
         val btnTestOverlay = view.findViewById<Button>(R.id.btnTestOverlay)
         val btnReloadYt = view.findViewById<Button>(R.id.btnReloadYt)
+        val btnCheckUpdate = view.findViewById<Button>(R.id.btnCheckUpdate)
         val tvDebugStatus = view.findViewById<TextView>(R.id.tvDebugStatus)
 
         cbBgPlay.isChecked = bgPlayEnabled
@@ -815,7 +822,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         }
 
         tvDebugStatus.text = buildString {
-            append("Bridge: ${if (ExtensionBridge.isConnected()) "Connected" else "Reconnecting..."} | Cues: $loadedCueCount")
+            append("Version: v${AppUpdater.getInstalledVersion(this@MainActivity)} | Bridge: ${if (ExtensionBridge.isConnected()) "Connected" else "Reconnecting..."} | Cues: $loadedCueCount")
             append("\nBG Play: ${if (bgPlayEnabled) "ON" else "OFF"} | YT Pkg: ${if (ytPackageMode) "ON (0 Anytime)" else "OFF"}")
             append("\nAds Blocked: $totalBlockedCount | CC: $lastSourceMode")
             if (lastOrigText.isNotEmpty()) append("\nOrig: $lastOrigText")
@@ -878,6 +885,11 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         btnReloadYt.setOnClickListener {
             dialog.dismiss()
             geckoSession.reload()
+        }
+
+        btnCheckUpdate.setOnClickListener {
+            dialog.dismiss()
+            AppUpdater.checkForUpdate(this, manual = true, ytPackageMode = ytPackageMode)
         }
 
         dialog.show()

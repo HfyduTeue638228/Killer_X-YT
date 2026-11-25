@@ -1,0 +1,4 @@
+Killer X YT v2.3 Update:
+- Built-in Online Auto-Updater (friends get update popups directly inside the app!)
+- Fixed YouTube video settings menu resetting Sinhala CC subtitles
+- Permanent release signing support for seamless one-tap updates

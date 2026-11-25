@@ -357,7 +357,7 @@
   let directSinhalaCues = [];
   let lastSiLine = "";
   let lastDomText = "";
-  let lastUrl = location.href;
+  let lastActiveVideoId = "";
   let lastDiscoveredVideoId = "";
   const fetchedUrls = new Set();
 
@@ -635,8 +635,10 @@
   }
 
   function checkNavigation() {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
+    const vid = getCurrentVideoId();
+    // Only reset subtitles when the ACTUAL video ID changes (opening YT settings/quality menu keeps same vid!)
+    if (vid !== lastActiveVideoId) {
+      lastActiveVideoId = vid;
       directSinhalaCues = [];
       lastSiLine = "";
       lastDomText = "";

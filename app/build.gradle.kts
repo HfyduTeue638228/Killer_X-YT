@@ -11,17 +11,35 @@ android {
         applicationId = "com.killerx.yt"
         minSdk = 24
         targetSdk = 35
-        versionCode = 5
-        versionName = "2.2"
+        versionCode = 6
+        versionName = "2.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val ksFile = file("killerx-release.jks")
+            if (ksFile.exists()) {
+                storeFile = ksFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "KillerX2026!"
+                keyAlias = System.getenv("KEY_ALIAS") ?: "killerx"
+                keyPassword = System.getenv("KEY_PASSWORD") ?: "KillerX2026!"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            val ksFile = file("killerx-release.jks")
+            signingConfig = if (ksFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

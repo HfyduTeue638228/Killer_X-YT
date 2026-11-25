@@ -14,7 +14,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="10dp"
-            android:text="Killer X YT v2.2 (GeckoView)"
+            android:text="Killer X YT v2.3 (Auto-Update)"
             android:textColor="@color/killer_red_glow"
             android:textSize="17sp"
             android:textStyle="bold" />
@@ -203,16 +203,36 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
-        <Button
-            android:id="@+id/btnReloadYt"
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="36dp"
+            android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:background="@drawable/bg_shield_pill"
-            android:text="Reload YouTube Page"
-            android:textAllCaps="false"
-            android:textColor="@color/killer_red_glow"
-            android:textSize="12sp" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnReloadYt"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_shield_pill"
+                android:text="Reload YouTube"
+                android:textAllCaps="false"
+                android:textColor="@color/killer_red_glow"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnCheckUpdate"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_dark_pill"
+                android:text="Check Updates"
+                android:textAllCaps="false"
+                android:textColor="@color/green_active"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvDebugStatus"
