@@ -23,11 +23,12 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 object AppUpdater {
 
-    // Exact GitHub repository of Killer X YT
     private const val GITHUB_REPO = "HfyduTeue638228/Killer_X-YT"
     private const val LATEST_RELEASE_API = "https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
@@ -49,7 +50,7 @@ object AppUpdater {
             val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.packageManager.getPackageInfo(
                     context.packageName,
-                    android.content.pm.PackageManager.PackageInfoFlags.of(0)
+                    android.content.pm.PackageManager.PackageInfoFlags.of(0L)
                 )
             } else {
                 @Suppress("DEPRECATION")
@@ -85,11 +86,6 @@ object AppUpdater {
         return false
     }
 
-    /**
-     * Checks GitHub Releases for a newer APK.
-     * When manual == false: runs silently ONLY on Wi-Fi (or when YT Package Mode is OFF)
-     * so mobile YouTube-only data packages never consume Anytime Data!
-     */
     fun checkForUpdate(activity: Activity, manual: Boolean, ytPackageMode: Boolean) {
         if (!manual && ytPackageMode && !isOnWifi(activity)) {
             return
@@ -207,21 +203,19 @@ object AppUpdater {
         container.addView(tvProgress)
         container.addView(progressBar)
 
-        @Volatile
-        var cancelled = false
+        val cancelled = AtomicBoolean(false)
 
         val progressDialog = AlertDialog.Builder(activity)
             .setTitle("Downloading Update (${info.latestVersion})")
             .setView(container)
             .setCancelable(false)
-            .setNegativeButton("Cancel") { _, _ -> cancelled = true }
+            .setNegativeButton("Cancel") { _, _ -> cancelled.set(true) }
             .create()
         progressDialog.show()
 
         executor.execute {
             try {
                 val updatesDir = File(activity.cacheDir, "updates").apply { mkdirs() }
-                // Clean old cached APKs
                 updatesDir.listFiles()?.forEach { it.delete() }
                 val outFile = File(updatesDir, "killer-x-yt-update.apk")
 
@@ -234,6 +228,7 @@ object AppUpdater {
                 }
 
                 if (conn.responseCode !in 200..299) {
+                    conn.disconnect()
                     throw RuntimeException("HTTP ${conn.responseCode}")
                 }
 
@@ -244,11 +239,7 @@ object AppUpdater {
 
                 conn.inputStream.use { input ->
                     FileOutputStream(outFile).use { output ->
-                        while (true) {
-                            if (cancelled) {
-                                outFile.delete()
-                                return@execute
-                            }
+                        while (!cancelled.get()) {
                             val read = input.read(buf)
                             if (read <= 0) break
                             output.write(buf, 0, read)
@@ -264,9 +255,9 @@ object AppUpdater {
                                         val totalMb = totalBytes / (1024.0 * 1024.0)
                                         progressBar.isIndeterminate = false
                                         progressBar.progress = pct
-                                        tvProgress.text = String.format("%.1f MB / %.1f MB (%d%%)", mb, totalMb, pct)
+                                        tvProgress.text = String.format(Locale.US, "%.1f MB / %.1f MB (%d%%)", mb, totalMb, pct)
                                     } else {
-                                        tvProgress.text = String.format("Downloaded %.1f MB...", mb)
+                                        tvProgress.text = String.format(Locale.US, "Downloaded %.1f MB...", mb)
                                     }
                                 }
                             }
@@ -275,6 +266,11 @@ object AppUpdater {
                 }
                 conn.disconnect()
 
+                if (cancelled.get()) {
+                    outFile.delete()
+                    return@execute
+                }
+
                 mainHandler.post {
                     progressDialog.dismiss()
                     launchApkInstaller(activity, outFile)
@@ -282,7 +278,7 @@ object AppUpdater {
             } catch (e: Exception) {
                 mainHandler.post {
                     progressDialog.dismiss()
-                    if (!cancelled) {
+                    if (!cancelled.get()) {
                         Toast.makeText(
                             activity,
                             "Download failed: ${e.message ?: "network error"}",
