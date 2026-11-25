@@ -1,11 +1,15 @@
-name: Build Killer X YT APK
+name: Build & Publish Killer X YT Release
 
 on:
   push:
+    branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build-apk:
+  build-and-release:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,15 +27,52 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Killer X YT APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Decode Permanent Signing Keystore (if secret is configured)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | tr -d '\n\r ' | base64 --decode > app/killerx-release.jks
+            echo "Permanent release keystore ready!"
+          else
+            echo "No KEYSTORE_BASE64 secret found yet - using temporary debug key."
+          fi
 
-      - name: Rename APK for easy download
-        run: cp app/build/outputs/apk/debug/app-debug.apk Killer-X-YT-v1.0.apk
+      - name: Extract App Version & Ensure Changelog
+        id: version
+        run: |
+          VER=$(grep -oE 'versionName[[:space:]]*=[[:space:]]*"[^"]+"' app/build.gradle.kts | head -n 1 | cut -d'"' -f2)
+          if [ -z "$VER" ]; then VER="2.3"; fi
+          echo "name=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+          if [ ! -f CHANGELOG.txt ]; then
+            echo "Killer X YT v$VER - Bug fixes and improvements." > CHANGELOG.txt
+          fi
+          echo "Detected version: v$VER"
 
-      - name: Upload APK Artifact
+      - name: Build Signed Release APK
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Prepare Release APK
+        run: |
+          APK_SRC=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          cp "$APK_SRC" "Killer-X-YT-${{ steps.version.outputs.tag }}.apk"
+          ls -lh "Killer-X-YT-${{ steps.version.outputs.tag }}.apk"
+
+      - name: Upload APK Artifact (Backup)
         uses: actions/upload-artifact@v4
         with:
-          name: Killer-X-YT-APK
-          path: Killer-X-YT-v1.0.apk
+          name: Killer-X-YT-${{ steps.version.outputs.tag }}-APK
+          path: Killer-X-YT-${{ steps.version.outputs.tag }}.apk
           retention-days: 30
+
+      - name: Publish Public GitHub Release (For In-App Auto-Updater)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Killer X YT ${{ steps.version.outputs.tag }}
+          body_path: CHANGELOG.txt
+          make_latest: true
+          files: Killer-X-YT-${{ steps.version.outputs.tag }}.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
