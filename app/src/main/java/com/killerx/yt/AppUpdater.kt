@@ -56,9 +56,9 @@ object AppUpdater {
                 @Suppress("DEPRECATION")
                 context.packageManager.getPackageInfo(context.packageName, 0)
             }
-            info.versionName ?: "2.6"
+            info.versionName ?: "2.7"
         } catch (_: Exception) {
-            "2.6"
+            "2.7"
         }
     }
 

@@ -1,4 +1,4 @@
-Killer X YT v2.6 Update:
-- Live YouTube Subtitle Translator: YouTube plays in whatever subtitle language you choose (auto-generated or manual) and Killer X YT translates every line into Sinhala CC in real time!
-- No longer forces YouTube's broken auto-translate Sinhala track or blocks translation in Package Mode
-- Instant MutationObserver capture + rolling auto-caption anti-flicker + 3-tier translator fallback
+Killer X YT v2.7 Update:
+- Official YouTube App-Style UI: Removed top browser bar, added Killer X Splash Screen, pure #0F0F0F dark theme & sticky video player!
+- Native Top-Bar Controls next to Search icon (Sleep Timer, PiP, CC/Settings)
+- New Sleep Timer (15, 30, 60, 120 minutes) — automatically stops playback & closes the app cleanly when time is up (works even with screen OFF!)

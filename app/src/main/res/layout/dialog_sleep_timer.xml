@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/bar_dark"
+    android:orientation="vertical"
+    android:padding="18dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🌙 Sleep Timer"
+        android:textColor="@color/killer_red_glow"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvSleepCountdown"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:layout_marginBottom="10dp"
+        android:background="@color/bg_dark"
+        android:padding="10dp"
+        android:text="Timer OFF — Time ekak select karala Turn ON obanna"
+        android:textColor="@color/text_muted"
+        android:textSize="12sp" />
+
+    <RadioGroup
+        android:id="@+id/rgSleepTime"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <RadioButton
+            android:id="@+id/rbSleep15"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:buttonTint="@color/killer_red"
+            android:text="15 Minutes"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
+
+        <RadioButton
+            android:id="@+id/rbSleep30"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:buttonTint="@color/killer_red"
+            android:checked="true"
+            android:text="30 Minutes"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
+
+        <RadioButton
+            android:id="@+id/rbSleep60"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:buttonTint="@color/killer_red"
+            android:text="60 Minutes (1 Hour)"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
+
+        <RadioButton
+            android:id="@+id/rbSleep120"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:buttonTint="@color/killer_red"
+            android:text="120 Minutes (2 Hours)"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
+    </RadioGroup>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnSleepOff"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_dark_pill"
+            android:text="Turn OFF"
+            android:textAllCaps="false"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnSleepOn"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_red_pill"
+            android:text="Turn ON"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+</LinearLayout>

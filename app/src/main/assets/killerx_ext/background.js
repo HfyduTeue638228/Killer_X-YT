@@ -3,7 +3,8 @@ let config = {
   ytPackageMode: true,
   dualSub: false,
   adShield: true,
-  bgPlayEnabled: true
+  bgPlayEnabled: true,
+  sleepRemainingMin: 0
 };
 
 let nativePort = null;
@@ -22,6 +23,7 @@ function applyConfig(msg) {
   if (typeof msg.dualSub === "boolean") config.dualSub = msg.dualSub;
   if (typeof msg.adShield === "boolean") config.adShield = msg.adShield;
   if (typeof msg.bgPlayEnabled === "boolean") config.bgPlayEnabled = msg.bgPlayEnabled;
+  if (typeof msg.sleepRemainingMin === "number") config.sleepRemainingMin = msg.sleepRemainingMin;
   broadcastToContent({ type: "config", config });
 }
 
@@ -334,7 +336,8 @@ browser.runtime.onConnect.addListener((port) => {
       msg.type === "hideSubtitle" ||
       msg.type === "mediaState" ||
       msg.type === "adBlocked" ||
-      msg.type === "trackLoaded"
+      msg.type === "trackLoaded" ||
+      msg.type === "uiAction"
     ) {
       sendToNative(msg);
     }

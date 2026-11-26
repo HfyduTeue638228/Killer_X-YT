@@ -14,7 +14,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="10dp"
-            android:text="Killer X YT v2.6 (Auto-Update)"
+            android:text="Killer X YT v2.7"
             android:textColor="@color/killer_red_glow"
             android:textSize="17sp"
             android:textStyle="bold" />
@@ -158,6 +158,19 @@
                 android:text="Cyan"
                 android:textColor="#8BE9FD" />
         </RadioGroup>
+
+        <!-- Sleep Timer Quick Access -->
+        <Button
+            android:id="@+id/btnOpenSleepTimer"
+            android:layout_width="match_parent"
+            android:layout_height="38dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_dark_pill"
+            android:text="🌙 Sleep Timer: OFF (15 / 30 / 60 / 120m)"
+            android:textAllCaps="false"
+            android:textColor="@color/accent_gold"
+            android:textSize="12sp"
+            android:textStyle="bold" />
 
         <!-- Account & Action Buttons -->
         <Button

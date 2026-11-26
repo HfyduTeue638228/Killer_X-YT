@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="icon_bg">#05070B</color>
-    <color name="bg_dark">#0B0B0F</color>
-    <color name="bar_dark">#14141B</color>
-    <color name="surface_dark">#1C1D27</color>
+    <color name="bg_dark">#0F0F0F</color>
+    <color name="bar_dark">#181818</color>
+    <color name="surface_dark">#272727</color>
     <color name="killer_red">#E50914</color>
     <color name="killer_red_glow">#FF3B30</color>
     <color name="accent_gold">#FFAE52</color>
     <color name="text_primary">#F5F5FA</color>
-    <color name="text_muted">#9C9FB4</color>
+    <color name="text_muted">#AAAAAA</color>
     <color name="green_active">#4ADE80</color>
 </resources>

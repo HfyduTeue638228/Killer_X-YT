@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Rational
 import android.util.TypedValue
 import android.view.Gravity
@@ -27,7 +28,6 @@ import android.view.WindowInsetsController
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.RadioButton
@@ -49,18 +49,18 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.MediaSession
+import java.util.Locale
 
 class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
     private lateinit var appContainer: LinearLayout
-    private lateinit var topBar: LinearLayout
+    private lateinit var authBackBar: LinearLayout
+    private lateinit var splashOverlay: LinearLayout
     private lateinit var geckoView: GeckoView
     private lateinit var progressBar: ProgressBar
     private lateinit var subtitleOverlayContainer: LinearLayout
     private lateinit var tvOrigSub: TextView
     private lateinit var tvSinhalaSub: TextView
-    private lateinit var btnBgPlay: TextView
-    private lateinit var btnShield: TextView
 
     private lateinit var geckoRuntime: GeckoRuntime
     private lateinit var geckoSession: GeckoSession
@@ -79,8 +79,18 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
     private var fontSizeSp = 18
     private var subPosition = "bottom"
     private var subColorHex = "#FFFFFF"
+    private var lastSelectedSleepMins = 30
+
+    // Sleep Timer state (screen-off accurate via elapsedRealtime!)
+    private var sleepEndElapsedMs = 0L
+    private var lastBroadcastSleepMin = -1
+    private var oneMinWarningShown = false
+    private var sleepDialogCountdownView: TextView? = null
+    private var activeSleepDialog: AlertDialog? = null
 
     // Live State
+    private var splashDismissed = false
+    private var isAuthPage = false
     private var canGoBack = false
     private var isFullscreen = false
     private var isVideoPlaying = false
@@ -104,8 +114,57 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
     private val mediaControlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val cmd = intent?.getStringExtra(MediaPlaybackService.EXTRA_CMD) ?: return
-            handleMediaCommand(cmd)
+            when (intent?.action) {
+                MediaPlaybackService.BROADCAST_SLEEP_EXPIRED -> {
+                    performSleepAutoClose()
+                }
+                MediaPlaybackService.BROADCAST_MEDIA_CONTROL -> {
+                    val cmd = intent.getStringExtra(MediaPlaybackService.EXTRA_CMD) ?: return
+                    handleMediaCommand(cmd)
+                }
+            }
+        }
+    }
+
+    private val sleepUiTicker = object : Runnable {
+        override fun run() {
+            if (sleepEndElapsedMs <= 0L) {
+                syncSleepBadgeIfChanged(0)
+                return
+            }
+            val remainingMs = sleepEndElapsedMs - SystemClock.elapsedRealtime()
+            if (remainingMs <= 0L) {
+                performSleepAutoClose()
+                return
+            }
+
+            val minsCeil = ((remainingMs + 59_999L) / 60_000L).toInt().coerceAtLeast(1)
+            syncSleepBadgeIfChanged(minsCeil)
+
+            if (!oneMinWarningShown && remainingMs <= 60_000L) {
+                oneMinWarningShown = true
+                Toast.makeText(
+                    this@MainActivity,
+                    "🌙 Sleep Timer: App eka 1 minute kin auto close wenawa",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+
+            sleepDialogCountdownView?.let { tv ->
+                val totalSecs = (remainingMs / 1000L).toInt()
+                val hrs = totalSecs / 3600
+                val mins = (totalSecs % 3600) / 60
+                val secs = totalSecs % 60
+                val formatted = if (hrs > 0) {
+                    String.format(Locale.US, "%d:%02d:%02d", hrs, mins, secs)
+                } else {
+                    String.format(Locale.US, "%02d:%02d", mins, secs)
+                }
+                tv.text = "🌙 Active — App will auto-close in $formatted"
+                tv.setTextColor(Color.parseColor("#4ADE80"))
+            }
+
+            mainHandler.postDelayed(this, 1000L)
         }
     }
 
@@ -114,14 +173,13 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         setContentView(R.layout.activity_main)
 
         appContainer = findViewById(R.id.appContainer)
-        topBar = findViewById(R.id.topBar)
+        authBackBar = findViewById(R.id.authBackBar)
+        splashOverlay = findViewById(R.id.splashOverlay)
         geckoView = findViewById(R.id.geckoView)
         progressBar = findViewById(R.id.progressBar)
         subtitleOverlayContainer = findViewById(R.id.subtitleOverlayContainer)
         tvOrigSub = findViewById(R.id.tvOrigSub)
         tvSinhalaSub = findViewById(R.id.tvSinhalaSub)
-        btnBgPlay = findViewById(R.id.btnBgPlay)
-        btnShield = findViewById(R.id.btnShield)
 
         // Android 15 / HyperOS safe insets (status bar + nav bar + keyboard IME)
         ViewCompat.setOnApplyWindowInsetsListener(appContainer) { view, insets ->
@@ -136,25 +194,34 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
         loadSettings()
         applySubtitleStyle()
-        updateTopBadges()
         requestNotificationPermissionIfNeeded()
 
+        val filter = IntentFilter().apply {
+            addAction(MediaPlaybackService.BROADCAST_MEDIA_CONTROL)
+            addAction(MediaPlaybackService.BROADCAST_SLEEP_EXPIRED)
+        }
         ContextCompat.registerReceiver(
             this,
             mediaControlReceiver,
-            IntentFilter(MediaPlaybackService.BROADCAST_MEDIA_CONTROL),
+            filter,
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
+        findViewById<TextView>(R.id.btnAuthBack).setOnClickListener {
+            geckoSession.loadUri(YOUTUBE_HOME)
+        }
+
         val initialUrl = intent?.dataString?.takeIf { it.contains("youtu") } ?: YOUTUBE_HOME
         setupGeckoEngine(initialUrl)
-        setupControls()
         setupBackNavigation()
+
+        // Safety splash auto-dismiss so splash never lingers more than 2.8 seconds
+        mainHandler.postDelayed({ dismissSplashOverlay() }, 2800L)
 
         // Silently check GitHub Releases for updates (Wi-Fi only when YT Package Mode is ON -> 0 Anytime Data!)
         mainHandler.postDelayed({
             AppUpdater.checkForUpdate(this, manual = false, ytPackageMode = ytPackageMode)
-        }, 3000L)
+        }, 3500L)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -162,6 +229,32 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         val incoming = intent.dataString
         if (!incoming.isNullOrBlank() && incoming.contains("youtu")) {
             geckoSession.loadUri(incoming)
+        }
+    }
+
+    private fun dismissSplashOverlay() {
+        if (splashDismissed) return
+        splashDismissed = true
+        mainHandler.post {
+            splashOverlay.animate()
+                .alpha(0f)
+                .setDuration(220L)
+                .withEndAction { splashOverlay.visibility = View.GONE }
+                .start()
+        }
+    }
+
+    private fun getSleepRemainingMinutes(): Int {
+        if (sleepEndElapsedMs <= 0L) return 0
+        val rem = sleepEndElapsedMs - SystemClock.elapsedRealtime()
+        if (rem <= 0L) return 0
+        return ((rem + 59_999L) / 60_000L).toInt().coerceAtLeast(1)
+    }
+
+    private fun syncSleepBadgeIfChanged(mins: Int) {
+        if (mins != lastBroadcastSleepMin) {
+            lastBroadcastSleepMin = mins
+            ExtensionBridge.send(buildCurrentConfig())
         }
     }
 
@@ -173,23 +266,27 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             put("dualSub", dualSub)
             put("adShield", adShield)
             put("bgPlayEnabled", bgPlayEnabled)
+            put("sleepRemainingMin", getSleepRemainingMinutes())
         }
     }
 
     override fun onBridgeStatusChanged(connected: Boolean) {
-        // Status is reflected in CC Settings debug panel
+        // Reflected inside CC Settings status box
     }
 
     override fun onExtensionMessage(json: JSONObject) {
         when (json.optString("type")) {
-            "adBlocked" -> recordAdBlocked()
+            "adBlocked" -> {
+                pageBlockedCount++
+                totalBlockedCount++
+            }
             "trackLoaded" -> {
                 loadedCueCount = json.optInt("count", 0)
             }
             "showSubtitle" -> {
                 val si = json.optString("si", "")
                 val orig = json.optString("orig", "")
-                val mode = json.optString("mode", "YouTube CC")
+                val mode = json.optString("mode", "Live Sinhala CC")
                 if (si.isNotBlank()) showNativeSubtitle(si, orig, mode)
             }
             "hideSubtitle" -> hideNativeSubtitle()
@@ -198,7 +295,160 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
                 val title = json.optString("title", "")
                 onPlaybackStateUpdated(playing, title)
             }
+            "uiAction" -> {
+                when (json.optString("action")) {
+                    "openSettings" -> mainHandler.post { showSettingsDialog() }
+                    "openSleepTimer" -> mainHandler.post { showSleepTimerDialog() }
+                    "enterPip" -> mainHandler.post { enterPipModeNow() }
+                }
+            }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Sleep Timer Engine (15 / 30 / 60 / 120 min -> Auto-Close App!)
+    // -------------------------------------------------------------------------
+    private fun startSleepTimer(minutes: Int) {
+        lastSelectedSleepMins = minutes
+        saveSettings()
+
+        sleepEndElapsedMs = SystemClock.elapsedRealtime() + minutes.toLong() * 60_000L
+        oneMinWarningShown = false
+        lastBroadcastSleepMin = -1
+
+        mainHandler.removeCallbacks(sleepUiTicker)
+        mainHandler.post(sleepUiTicker)
+
+        // Delegate accurate screen-off countdown to Foreground Service
+        val svcIntent = Intent(this, MediaPlaybackService::class.java).apply {
+            action = MediaPlaybackService.ACTION_SET_SLEEP_TIMER
+            putExtra(MediaPlaybackService.EXTRA_SLEEP_END_MS, sleepEndElapsedMs)
+        }
+        try {
+            ContextCompat.startForegroundService(this, svcIntent)
+        } catch (_: Exception) {
+        }
+
+        Toast.makeText(
+            this,
+            "🌙 Sleep Timer ON: App eka $minutes minutes walin auto close wenawa",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun cancelSleepTimer(showToast: Boolean = true) {
+        sleepEndElapsedMs = 0L
+        oneMinWarningShown = false
+        mainHandler.removeCallbacks(sleepUiTicker)
+        syncSleepBadgeIfChanged(0)
+
+        val svcIntent = Intent(this, MediaPlaybackService::class.java).apply {
+            action = MediaPlaybackService.ACTION_SET_SLEEP_TIMER
+            putExtra(MediaPlaybackService.EXTRA_SLEEP_END_MS, 0L)
+        }
+        try {
+            startService(svcIntent)
+        } catch (_: Exception) {
+        }
+
+        if (showToast) {
+            Toast.makeText(this, "🌙 Sleep Timer OFF", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun performSleepAutoClose() {
+        mainHandler.post {
+            sleepEndElapsedMs = 0L
+            mainHandler.removeCallbacks(sleepUiTicker)
+            try {
+                activeSleepDialog?.dismiss()
+            } catch (_: Exception) {
+            }
+
+            // 1. Immediately pause/stop audio & video
+            try {
+                activeMediaSession?.pause()
+            } catch (_: Exception) {
+            }
+            ExtensionBridge.send(JSONObject().apply {
+                put("type", "mediaControl")
+                put("cmd", "stop")
+            })
+
+            // 2. Stop Foreground Service & release WakeLock
+            stopService(Intent(this, MediaPlaybackService::class.java))
+
+            // 3. Close GeckoSession & remove app cleanly from Recents
+            try {
+                geckoSession.setActive(false)
+                geckoSession.close()
+            } catch (_: Exception) {
+            }
+
+            try {
+                finishAndRemoveTask()
+            } catch (_: Exception) {
+                finish()
+            }
+
+            // 4. Terminate process cleanly after activity finishes so background engine closes 100%
+            mainHandler.postDelayed({
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }, 350L)
+        }
+    }
+
+    private fun showSleepTimerDialog() {
+        val view = layoutInflater.inflate(R.layout.dialog_sleep_timer, null)
+        val tvCountdown = view.findViewById<TextView>(R.id.tvSleepCountdown)
+        val rgSleepTime = view.findViewById<RadioGroup>(R.id.rgSleepTime)
+        val rb15 = view.findViewById<RadioButton>(R.id.rbSleep15)
+        val rb30 = view.findViewById<RadioButton>(R.id.rbSleep30)
+        val rb60 = view.findViewById<RadioButton>(R.id.rbSleep60)
+        val rb120 = view.findViewById<RadioButton>(R.id.rbSleep120)
+        val btnOff = view.findViewById<Button>(R.id.btnSleepOff)
+        val btnOn = view.findViewById<Button>(R.id.btnSleepOn)
+
+        when (lastSelectedSleepMins) {
+            15 -> rb15.isChecked = true
+            60 -> rb60.isChecked = true
+            120 -> rb120.isChecked = true
+            else -> rb30.isChecked = true
+        }
+
+        if (sleepEndElapsedMs <= SystemClock.elapsedRealtime()) {
+            tvCountdown.text = "Timer OFF — 15 / 30 / 60 / 120 min ekak tick karala Turn ON obanna"
+            tvCountdown.setTextColor(Color.parseColor("#AAAAAA"))
+        }
+
+        sleepDialogCountdownView = tvCountdown
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(view)
+            .setOnDismissListener {
+                sleepDialogCountdownView = null
+                activeSleepDialog = null
+            }
+            .create()
+        activeSleepDialog = dialog
+
+        btnOn.setOnClickListener {
+            val mins = when (rgSleepTime.checkedRadioButtonId) {
+                R.id.rbSleep15 -> 15
+                R.id.rbSleep60 -> 60
+                R.id.rbSleep120 -> 120
+                else -> 30
+            }
+            startSleepTimer(mins)
+            dialog.dismiss()
+        }
+
+        btnOff.setOnClickListener {
+            cancelSleepTimer(showToast = true)
+            dialog.dismiss()
+        }
+
+        dialog.show()
     }
 
     private fun handleMediaCommand(cmd: String) {
@@ -316,17 +566,21 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         }
 
         geckoSession.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onFirstContentfulPaint(session: GeckoSession) {
+                dismissSplashOverlay()
+            }
+
             override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
                 mainHandler.post {
                     isFullscreen = fullScreen
                     if (fullScreen) {
-                        topBar.visibility = View.GONE
+                        authBackBar.visibility = View.GONE
                         progressBar.visibility = View.GONE
                         appContainer.setPadding(0, 0, 0, 0)
                         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                         setImmersiveMode(true)
                     } else {
-                        if (!isInPip) topBar.visibility = View.VISIBLE
+                        authBackBar.visibility = if (isAuthPage && !isInPip) View.VISIBLE else View.GONE
                         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                         setImmersiveMode(false)
                         ViewCompat.requestApplyInsets(appContainer)
@@ -375,7 +629,8 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
                     ) {
                         session.loadUri(uri)
                     } else if (adShield) {
-                        recordAdBlocked()
+                        pageBlockedCount++
+                        totalBlockedCount++
                     }
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
@@ -385,17 +640,20 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
         geckoSession.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
+                val u = url.lowercase()
+                isAuthPage = u.contains("accounts.google.com") || u.contains("accounts.youtube.com") || u.contains("myaccount.google.com")
                 mainHandler.post {
+                    authBackBar.visibility = if (isAuthPage && !isInPip && !isFullscreen) View.VISIBLE else View.GONE
                     pageBlockedCount = 0
                     loadedCueCount = 0
-                    updateTopBadges()
                     hideNativeSubtitle()
                 }
             }
 
             override fun onProgressChange(session: GeckoSession, progress: Int) {
                 mainHandler.post {
-                    if (isInPip || isFullscreen) {
+                    if (progress >= 80) dismissSplashOverlay()
+                    if (isInPip || isFullscreen || !splashDismissed) {
                         progressBar.visibility = View.GONE
                     } else if (progress in 1..99) {
                         progressBar.visibility = View.VISIBLE
@@ -409,10 +667,9 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
         geckoSession.open(geckoRuntime)
         geckoSession.setActive(true)
-        geckoView.coverUntilFirstPaint(Color.parseColor("#0B0B0F"))
+        geckoView.coverUntilFirstPaint(Color.parseColor("#0F0F0F"))
         geckoView.setSession(geckoSession)
 
-        // Attach process-wide ExtensionBridge BEFORE loading YouTube so cold & warm restarts NEVER miss CC!
         ExtensionBridge.attach(geckoRuntime, this) {
             geckoSession.loadUri(initialUrl)
         }
@@ -432,12 +689,6 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
                 }
             }
         }
-    }
-
-    private fun recordAdBlocked() {
-        pageBlockedCount++
-        totalBlockedCount++
-        updateTopBadges()
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -464,6 +715,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         fontSizeSp = prefs.getInt("fontSizeSp", 18)
         subPosition = prefs.getString("subPosition", "bottom") ?: "bottom"
         subColorHex = prefs.getString("subColorHex", "#FFFFFF") ?: "#FFFFFF"
+        lastSelectedSleepMins = prefs.getInt("lastSelectedSleepMins", 30)
     }
 
     private fun saveSettings() {
@@ -477,23 +729,8 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             .putInt("fontSizeSp", fontSizeSp)
             .putString("subPosition", subPosition)
             .putString("subColorHex", subColorHex)
+            .putInt("lastSelectedSleepMins", lastSelectedSleepMins)
             .apply()
-    }
-
-    private fun updateTopBadges() {
-        mainHandler.post {
-            if (adShield) {
-                btnShield.text = "🛡$pageBlockedCount"
-                btnShield.setTextColor(Color.parseColor("#FF4B3A"))
-            } else {
-                btnShield.text = "🛡OFF"
-                btnShield.setTextColor(Color.parseColor("#888C9E"))
-            }
-            btnBgPlay.text = "BG"
-            btnBgPlay.setTextColor(
-                Color.parseColor(if (bgPlayEnabled) "#4ADE80" else "#7D8094")
-            )
-        }
     }
 
     private fun applySubtitleStyle() {
@@ -516,14 +753,14 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             lp.marginEnd = (6 * density).toInt()
         } else if (subPosition == "top") {
             lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            lp.topMargin = ((if (isFullscreen) 16 else 58) * density).toInt()
+            lp.topMargin = ((if (isFullscreen) 16 else 56) * density).toInt()
             lp.bottomMargin = 0
             lp.marginStart = (14 * density).toInt()
             lp.marginEnd = (14 * density).toInt()
         } else {
             lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             lp.topMargin = 0
-            lp.bottomMargin = ((if (isFullscreen) 24 else 44) * density).toInt()
+            lp.bottomMargin = ((if (isFullscreen) 24 else 56) * density).toInt()
             lp.marginStart = (14 * density).toInt()
             lp.marginEnd = (14 * density).toInt()
         }
@@ -591,7 +828,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPip = isInPictureInPictureMode
         geckoSession.setActive(true)
-        topBar.visibility = if (isInPip || isFullscreen) View.GONE else View.VISIBLE
+        authBackBar.visibility = if (isAuthPage && !isInPip && !isFullscreen) View.VISIBLE else View.GONE
         progressBar.visibility = View.GONE
         if (isInPip) {
             appContainer.setPadding(0, 0, 0, 0)
@@ -630,7 +867,8 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
     // Background & Screen-Off Playback Service
     // -------------------------------------------------------------------------
     private fun syncBackgroundService(playing: Boolean, title: String) {
-        if (!bgPlayEnabled) {
+        val sleepActive = sleepEndElapsedMs > SystemClock.elapsedRealtime()
+        if (!bgPlayEnabled && !sleepActive) {
             stopService(Intent(this, MediaPlaybackService::class.java))
             return
         }
@@ -638,9 +876,12 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             action = MediaPlaybackService.ACTION_UPDATE
             putExtra(MediaPlaybackService.EXTRA_TITLE, title)
             putExtra(MediaPlaybackService.EXTRA_PLAYING, playing)
+            if (sleepActive) {
+                putExtra(MediaPlaybackService.EXTRA_SLEEP_END_MS, sleepEndElapsedMs)
+            }
         }
         try {
-            if (playing) {
+            if (playing || sleepActive) {
                 ContextCompat.startForegroundService(this, svcIntent)
             } else {
                 startService(svcIntent)
@@ -651,7 +892,8 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
     override fun onPause() {
         super.onPause()
-        if (bgPlayEnabled || isInPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
+        val sleepActive = sleepEndElapsedMs > SystemClock.elapsedRealtime()
+        if (bgPlayEnabled || sleepActive || isInPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
             geckoSession.setActive(true)
         } else {
             geckoSession.setActive(false)
@@ -666,6 +908,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(sleepUiTicker)
         ExtensionBridge.detach(this)
         try {
             unregisterReceiver(mediaControlReceiver)
@@ -697,46 +940,6 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             } else {
                 View.SYSTEM_UI_FLAG_VISIBLE
             }
-        }
-    }
-
-    private fun setupControls() {
-        val goHome: (View) -> Unit = { geckoSession.loadUri(YOUTUBE_HOME) }
-        findViewById<ImageView>(R.id.ivBrandLogo).setOnClickListener(goHome)
-        findViewById<TextView>(R.id.tvBrandTitle).setOnClickListener(goHome)
-
-        findViewById<TextView>(R.id.btnBack).setOnClickListener {
-            if (canGoBack) geckoSession.goBack()
-        }
-
-        findViewById<TextView>(R.id.btnPip).setOnClickListener {
-            enterPipModeNow()
-        }
-
-        btnBgPlay.setOnClickListener {
-            bgPlayEnabled = !bgPlayEnabled
-            saveSettings()
-            updateTopBadges()
-            ExtensionBridge.pushConfigAndResync()
-            if (!bgPlayEnabled) {
-                stopService(Intent(this, MediaPlaybackService::class.java))
-            } else if (isVideoPlaying) {
-                syncBackgroundService(true, currentVideoTitle)
-            }
-            val msg = if (bgPlayEnabled) "Background & Screen-Off Play: ON" else "Background Play: OFF"
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-        }
-
-        btnShield.setOnClickListener {
-            Toast.makeText(
-                this,
-                "Killer X Shield (Firefox): ${if (adShield) "ON" else "OFF"} | Blocked: $pageBlockedCount (Total $totalBlockedCount)",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-
-        findViewById<TextView>(R.id.btnSettings).setOnClickListener {
-            showSettingsDialog()
         }
     }
 
@@ -798,6 +1001,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         val rbWhite = view.findViewById<RadioButton>(R.id.rbColorWhite)
         val rbYellow = view.findViewById<RadioButton>(R.id.rbColorYellow)
         val rbCyan = view.findViewById<RadioButton>(R.id.rbColorCyan)
+        val btnOpenSleepTimer = view.findViewById<Button>(R.id.btnOpenSleepTimer)
         val btnGmailLogin = view.findViewById<Button>(R.id.btnGmailLogin)
         val btnEnterPipNow = view.findViewById<Button>(R.id.btnEnterPipNow)
         val btnTestOverlay = view.findViewById<Button>(R.id.btnTestOverlay)
@@ -822,9 +1026,16 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             else -> rbWhite.isChecked = true
         }
 
+        val sleepMins = getSleepRemainingMinutes()
+        btnOpenSleepTimer.text = if (sleepMins > 0) {
+            "🌙 Sleep Timer: ON (${sleepMins}m remaining)"
+        } else {
+            "🌙 Sleep Timer: OFF (15 / 30 / 60 / 120m)"
+        }
+
         tvDebugStatus.text = buildString {
-            append("Version: v${AppUpdater.getInstalledVersion(this@MainActivity)} | Bridge: ${if (ExtensionBridge.isConnected()) "Connected" else "Reconnecting..."} | Cues: $loadedCueCount")
-            append("\nBG Play: ${if (bgPlayEnabled) "ON" else "OFF"} | YT Pkg: ${if (ytPackageMode) "ON (0 Anytime)" else "OFF"}")
+            append("Version: v${AppUpdater.getInstalledVersion(this@MainActivity)} | Bridge: ${if (ExtensionBridge.isConnected()) "Connected" else "Reconnecting..."} | Lines: $loadedCueCount")
+            append("\nBG Play: ${if (bgPlayEnabled) "ON" else "OFF"} | Sleep: ${if (sleepMins > 0) "${sleepMins}m" else "OFF"}")
             append("\nAds Blocked: $totalBlockedCount | CC: $lastSourceMode")
             if (lastOrigText.isNotEmpty()) append("\nOrig: $lastOrigText")
             if (lastSiText.isNotEmpty()) append("\nSI: $lastSiText")
@@ -858,19 +1069,25 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
                 saveSettings()
                 applySubtitleStyle()
-                updateTopBadges()
                 ExtensionBridge.pushConfigAndResync()
 
                 if (!ccEnabled) hideNativeSubtitle()
-                if (!bgPlayEnabled) stopService(Intent(this, MediaPlaybackService::class.java))
+                if (!bgPlayEnabled && sleepEndElapsedMs <= SystemClock.elapsedRealtime()) {
+                    stopService(Intent(this, MediaPlaybackService::class.java))
+                }
             }
             .setNegativeButton("Close", null)
             .create()
 
+        btnOpenSleepTimer.setOnClickListener {
+            dialog.dismiss()
+            showSleepTimerDialog()
+        }
+
         btnGmailLogin.setOnClickListener {
             dialog.dismiss()
             geckoSession.loadUri(GOOGLE_LOGIN_URL)
-            Toast.makeText(this, "Opening Google Sign-In (Firefox Engine)...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Opening Google Sign-In...", Toast.LENGTH_SHORT).show()
         }
 
         btnEnterPipNow.setOnClickListener {
