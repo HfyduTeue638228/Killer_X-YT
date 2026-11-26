@@ -14,7 +14,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="10dp"
-            android:text="Killer X YT v2.3 (Auto-Update)"
+            android:text="Killer X YT v2.4 (Auto-Update)"
             android:textColor="@color/killer_red_glow"
             android:textSize="17sp"
             android:textStyle="bold" />

@@ -14,6 +14,7 @@ const ourFetchedUrls = new Set();
 const recentTimedText = new Map();
 const translateCache = new Map();
 let latestTimedTextUrl = "";
+let latestVideoId = "";
 let latestDirectCues = [];
 
 function applyConfig(msg) {
@@ -81,7 +82,6 @@ function connectNative() {
       }
     });
 
-    // Immediately verify the port with a ping + ready
     p.postMessage({ type: "ping" });
     p.postMessage({ type: "ready" });
   } catch (e) {
@@ -89,7 +89,6 @@ function connectNative() {
   }
 }
 
-// Self-healing send: uses verified Port, or falls back to stateless sendNativeMessage!
 function sendToNative(obj) {
   if (nativePort && portVerified) {
     try {
@@ -100,7 +99,6 @@ function sendToNative(obj) {
     }
   }
 
-  // Stateless fallback (works even during cold-start race before Port is verified!)
   try {
     browser.runtime.sendNativeMessage("killerx", obj).then((reply) => {
       if (reply && typeof reply === "object") {
@@ -113,13 +111,11 @@ function sendToNative(obj) {
   connectNative();
 }
 
-// Heartbeat every 2.5s: guarantees automatic recovery on cold start OR warm restart!
 connectNative();
 setInterval(() => {
   const now = Date.now();
   if (!nativePort || !portVerified || (lastPongTime > 0 && now - lastPongTime > 7000)) {
     connectNative();
-    // Also fetch latest config via stateless call in case port is still negotiating
     try {
       browser.runtime.sendNativeMessage("killerx", { type: "getConfig" }).then((reply) => {
         if (reply && typeof reply === "object" && reply.type === "config") {
@@ -138,12 +134,53 @@ setInterval(() => {
   }
 }, 2500);
 
-// Long-lived runtime Ports from content.js
+function extractVideoIdFromUrl(url) {
+  try {
+    return new URL(url).searchParams.get("v") || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function fetchTimedTextCorsFree(siUrl, videoId) {
+  if (!siUrl || !siUrl.includes("/api/timedtext")) return;
+  ourFetchedUrls.add(siUrl);
+  setTimeout(() => ourFetchedUrls.delete(siUrl), 10000);
+
+  fetch(siUrl, { credentials: "include" })
+    .then((r) => (r.ok ? r.text() : ""))
+    .then((txt) => {
+      const cues = parseTimedText(txt);
+      if (cues.length > 0) {
+        latestVideoId = videoId || extractVideoIdFromUrl(siUrl);
+        latestDirectCues = cues;
+        broadcastToContent({ type: "directSinhalaTrack", videoId: latestVideoId, cues });
+        sendToNative({ type: "trackLoaded", count: cues.length });
+      } else if (!siUrl.includes("fmt=json3")) {
+        const jsonUrl = siUrl + "&fmt=json3";
+        ourFetchedUrls.add(jsonUrl);
+        setTimeout(() => ourFetchedUrls.delete(jsonUrl), 10000);
+        fetch(jsonUrl, { credentials: "include" })
+          .then((r2) => (r2.ok ? r2.text() : ""))
+          .then((txt2) => {
+            const cues2 = parseTimedText(txt2);
+            if (cues2.length > 0) {
+              latestVideoId = videoId || extractVideoIdFromUrl(siUrl);
+              latestDirectCues = cues2;
+              broadcastToContent({ type: "directSinhalaTrack", videoId: latestVideoId, cues: cues2 });
+              sendToNative({ type: "trackLoaded", count: cues2.length });
+            }
+          })
+          .catch(() => {});
+      }
+    })
+    .catch(() => {});
+}
+
 browser.runtime.onConnect.addListener((port) => {
   if (!port || port.name !== "yt-content") return;
   contentPorts.add(port);
 
-  // Wake/verify native bridge whenever a YouTube page loads!
   if (!nativePort || !portVerified) {
     connectNative();
   }
@@ -151,9 +188,9 @@ browser.runtime.onConnect.addListener((port) => {
   try {
     port.postMessage({ type: "config", config });
     if (latestDirectCues.length > 0) {
-      port.postMessage({ type: "directSinhalaTrack", cues: latestDirectCues });
+      port.postMessage({ type: "directSinhalaTrack", videoId: latestVideoId, cues: latestDirectCues });
     } else if (latestTimedTextUrl) {
-      port.postMessage({ type: "timedTextUrl", url: latestTimedTextUrl });
+      port.postMessage({ type: "timedTextUrl", videoId: latestVideoId, url: latestTimedTextUrl });
     }
   } catch (e) {}
 
@@ -161,9 +198,19 @@ browser.runtime.onConnect.addListener((port) => {
     if (!msg || typeof msg !== "object") return;
 
     if (msg.type === "clearTrack") {
-      latestTimedTextUrl = "";
-      latestDirectCues = [];
-      recentTimedText.clear();
+      // Only clear if the cached track belongs to a DIFFERENT videoId than the newly navigated video!
+      if (!msg.videoId || msg.videoId !== latestVideoId) {
+        latestTimedTextUrl = "";
+        latestVideoId = "";
+        latestDirectCues = [];
+        recentTimedText.clear();
+      }
+      return;
+    }
+
+    if (msg.type === "fetchTimedText" && msg.url) {
+      const siUrl = toYouTubeSinhalaUrl(msg.url);
+      fetchTimedTextCorsFree(siUrl, msg.videoId || extractVideoIdFromUrl(siUrl));
       return;
     }
 
@@ -381,6 +428,7 @@ browser.webRequest.onCompleted.addListener(
     if (ourFetchedUrls.has(url)) return;
 
     const siUrl = toYouTubeSinhalaUrl(url);
+    const vid = extractVideoIdFromUrl(siUrl);
     const now = Date.now();
     const prev = recentTimedText.get(siUrl);
     if (prev && now - prev < 5000) return;
@@ -388,25 +436,10 @@ browser.webRequest.onCompleted.addListener(
     if (recentTimedText.size > 60) recentTimedText.clear();
 
     latestTimedTextUrl = siUrl;
+    latestVideoId = vid;
 
-    // 1. Immediately tell content.js to fetch siUrl with page's exact first-party cookies!
-    broadcastToContent({ type: "timedTextUrl", url: siUrl });
-
-    // 2. Also fetch from background.js as backup
-    ourFetchedUrls.add(siUrl);
-    setTimeout(() => ourFetchedUrls.delete(siUrl), 10000);
-
-    fetch(siUrl, { credentials: "include" })
-      .then((r) => (r.ok ? r.text() : ""))
-      .then((txt) => {
-        const cues = parseTimedText(txt);
-        if (cues.length > 0) {
-          latestDirectCues = cues;
-          broadcastToContent({ type: "directSinhalaTrack", cues });
-          sendToNative({ type: "trackLoaded", count: cues.length });
-        }
-      })
-      .catch(() => {});
+    broadcastToContent({ type: "timedTextUrl", videoId: vid, url: siUrl });
+    fetchTimedTextCorsFree(siUrl, vid);
   },
   { urls: ["*://*.youtube.com/api/timedtext*"] }
 );

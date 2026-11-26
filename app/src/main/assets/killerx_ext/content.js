@@ -9,7 +9,6 @@
     bgPlayEnabled: true
   };
 
-  // Use Firefox's page-principal fetch (content.fetch) so first-party YouTube/Gmail cookies are ALWAYS included!
   const pageFetch = (typeof content !== "undefined" && typeof content.fetch === "function")
     ? content.fetch.bind(content)
     : fetch.bind(window);
@@ -233,6 +232,8 @@
     v.addEventListener("play", () => {
       userPaused = false;
       reportMediaState();
+      // Trigger immediate caption discovery whenever a video starts playing!
+      discoverCaptionsForCurrentVideo();
     });
 
     v.addEventListener("pause", () => {
@@ -352,13 +353,16 @@
   }
 
   // =========================================================================
-  // 5. 0ms SINHALA CC ENGINE (Page-Principal Fetch + Player Auto-Discovery + DOM Fallback!)
+  // 5. ZERO-RELOAD 0ms SINHALA CC ENGINE (SPA Watch-Page Discovery + Same-Origin + BG Fallback)
   // =========================================================================
   let directSinhalaCues = [];
+  let directSinhalaVideoId = "";
   let lastSiLine = "";
   let lastDomText = "";
   let lastActiveVideoId = "";
-  let lastDiscoveredVideoId = "";
+  let watchFetchInFlightVid = "";
+  let watchFetchAttempts = 0;
+  let lastWatchFetchTime = 0;
   const fetchedUrls = new Set();
 
   function cleanCue(text) {
@@ -478,40 +482,17 @@
     return url + (url.includes("?") ? "&" : "?") + "tlang=si";
   }
 
-  function fetchSinhalaSameOrigin(rawUrl) {
-    if (!config.ccEnabled || !rawUrl || !rawUrl.includes("/api/timedtext")) return;
-    const siUrl = toYtSinhalaUrl(rawUrl);
-    if (fetchedUrls.has(siUrl)) return;
-    fetchedUrls.add(siUrl);
-    if (fetchedUrls.size > 40) fetchedUrls.clear();
-
-    pageFetch(siUrl, { credentials: "include" })
-      .then((r) => (r.ok ? r.text() : ""))
-      .then((txt) => {
-        const cues = parseTimedText(txt);
-        if (cues.length > 0) {
-          directSinhalaCues = cues.slice().sort((a, b) => a.start - b.start);
-          lastSiLine = "";
-          postBg({ type: "trackLoaded", count: cues.length });
-          syncDirectTrack();
-        } else if (!siUrl.includes("fmt=json3")) {
-          // Retry once with fmt=json3 if XML returned empty
-          const jsonUrl = siUrl + "&fmt=json3";
-          pageFetch(jsonUrl, { credentials: "include" })
-            .then((r2) => (r2.ok ? r2.text() : ""))
-            .then((txt2) => {
-              const cues2 = parseTimedText(txt2);
-              if (cues2.length > 0) {
-                directSinhalaCues = cues2.slice().sort((a, b) => a.start - b.start);
-                lastSiLine = "";
-                postBg({ type: "trackLoaded", count: cues2.length });
-                syncDirectTrack();
-              }
-            })
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
+  // Normalize www.youtube.com/api/timedtext -> m.youtube.com/api/timedtext so same-origin fetch NEVER hits CORS!
+  function toSameOriginUrl(url) {
+    try {
+      const u = new URL(url, location.origin);
+      if (u.hostname.endsWith("youtube.com") && u.origin !== location.origin) {
+        return location.origin + u.pathname + u.search;
+      }
+      return u.href;
+    } catch (e) {
+      return url;
+    }
   }
 
   function getCurrentVideoId() {
@@ -523,21 +504,172 @@
     return "";
   }
 
-  function tryDiscoverCaptionTrackFromPlayer() {
-    if (!config.ccEnabled || directSinhalaCues.length > 0) return;
-    const vid = getCurrentVideoId();
-    if (!vid || vid === lastDiscoveredVideoId) return;
+  function applyDirectCues(videoId, cues) {
+    const curVid = getCurrentVideoId();
+    if (!Array.isArray(cues) || cues.length === 0) return;
+    if (videoId && curVid && videoId !== curVid) return;
 
+    // Sync active video ID first so checkNavigation() never wipes these freshly loaded cues!
+    if (curVid) lastActiveVideoId = curVid;
+    directSinhalaVideoId = videoId || curVid;
+    directSinhalaCues = cues.slice().sort((a, b) => a.start - b.start);
+    lastSiLine = "";
+    postBg({ type: "trackLoaded", count: cues.length });
+    syncDirectTrack();
+  }
+
+  function fetchSinhalaTrack(rawUrl, targetVid) {
+    if (!config.ccEnabled || !rawUrl || !rawUrl.includes("/api/timedtext")) return;
+    const vid = targetVid || getCurrentVideoId();
+    if (vid && directSinhalaVideoId === vid && directSinhalaCues.length > 0) return;
+
+    const siOriginal = toYtSinhalaUrl(rawUrl);
+    const siSameOrigin = toSameOriginUrl(siOriginal);
+    if (fetchedUrls.has(siSameOrigin)) return;
+    fetchedUrls.add(siSameOrigin);
+    if (fetchedUrls.size > 50) fetchedUrls.clear();
+
+    pageFetch(siSameOrigin, { credentials: "include" })
+      .then((r) => (r.ok ? r.text() : ""))
+      .then((txt) => {
+        const cues = parseTimedText(txt);
+        if (cues.length > 0) {
+          applyDirectCues(vid, cues);
+          return;
+        }
+        // Retry with fmt=json3 same-origin
+        const jsonUrl = siSameOrigin.includes("fmt=json3") ? siSameOrigin : (siSameOrigin + "&fmt=json3");
+        return pageFetch(jsonUrl, { credentials: "include" })
+          .then((r2) => (r2.ok ? r2.text() : ""))
+          .then((txt2) => {
+            const cues2 = parseTimedText(txt2);
+            if (cues2.length > 0) {
+              applyDirectCues(vid, cues2);
+            } else {
+              // Last resort: ask background.js (CORS-free <all_urls>) to fetch original URL
+              postBg({ type: "fetchTimedText", url: siOriginal, videoId: vid });
+            }
+          });
+      })
+      .catch(() => {
+        postBg({ type: "fetchTimedText", url: siOriginal, videoId: vid });
+      });
+  }
+
+  function pickBestCaptionTrack(tracks) {
+    if (!Array.isArray(tracks) || tracks.length === 0) return null;
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (t && t.languageCode === "si" && t.baseUrl) return t;
+    }
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (t && t.languageCode && t.languageCode.startsWith("en") && t.baseUrl) return t;
+    }
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (t && t.baseUrl) return t;
+    }
+    return null;
+  }
+
+  // Balanced JSON array extractor that handles raw JSON, escaped \", AND hex-escaped \x22 in m.youtube.com HTML!
+  function parseBalancedArrayAt(str, bracketStart) {
+    if (str[bracketStart] !== "[") return null;
+    let depth = 0;
+    let inStr = false;
+    let escaped = false;
+    for (let i = bracketStart; i < str.length && i < bracketStart + 180000; i++) {
+      const ch = str[i];
+      if (inStr) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inStr = false;
+      } else {
+        if (ch === '"') inStr = true;
+        else if (ch === "[") depth++;
+        else if (ch === "]") {
+          depth--;
+          if (depth === 0) {
+            try {
+              const arr = JSON.parse(str.slice(bracketStart, i + 1));
+              if (Array.isArray(arr) && arr.length > 0 && arr[0] && arr[0].baseUrl) return arr;
+            } catch (e) {}
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function extractCaptionTracksFromHtml(html) {
+    if (!html || html.length < 100) return null;
+
+    // Case 1: Raw JSON `"captionTracks":[...]`
+    let pos = html.indexOf('"captionTracks":');
+    if (pos >= 0) {
+      let s = pos + 16;
+      while (s < html.length && /\s/.test(html[s])) s++;
+      const arr = parseBalancedArrayAt(html, s);
+      if (arr) return arr;
+    }
+
+    // Case 2: Hex-escaped `\x22captionTracks\x22:` (common in m.youtube.com mobile HTML!)
+    let hexPos = html.indexOf("\\x22captionTracks\\x22:");
+    if (hexPos >= 0) {
+      const slice = html.slice(hexPos, hexPos + 120000)
+        .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\\u0026/g, "&")
+        .replace(/\\\//g, "/");
+      const innerPos = slice.indexOf('"captionTracks":');
+      if (innerPos >= 0) {
+        let s = innerPos + 16;
+        while (s < slice.length && /\s/.test(slice[s])) s++;
+        const arr = parseBalancedArrayAt(slice, s);
+        if (arr) return arr;
+      }
+    }
+
+    // Case 3: Backslash-escaped `\"captionTracks\":`
+    let escPos = html.indexOf('\\"captionTracks\\":');
+    if (escPos >= 0) {
+      const slice = html.slice(escPos, escPos + 120000)
+        .replace(/\\"/g, '"')
+        .replace(/\\\\u0026/g, "&")
+        .replace(/\\u0026/g, "&")
+        .replace(/\\\//g, "/");
+      const innerPos = slice.indexOf('"captionTracks":');
+      if (innerPos >= 0) {
+        let s = innerPos + 16;
+        while (s < slice.length && /\s/.test(slice[s])) s++;
+        const arr = parseBalancedArrayAt(slice, s);
+        if (arr) return arr;
+      }
+    }
+
+    return null;
+  }
+
+  // Layer 1: Try reading fresh captionTracks from YouTube's in-memory player object
+  function tryPlayerObjectDiscovery(vid) {
     try {
       const pageWin = window.wrappedJSObject || window;
       const playerEl = document.getElementById("movie_player");
       const player = playerEl ? (playerEl.wrappedJSObject || playerEl) : null;
+
       let resp = null;
       if (player && typeof player.getPlayerResponse === "function") {
-        resp = player.getPlayerResponse();
+        const pr = player.getPlayerResponse();
+        if (pr && pr.videoDetails && pr.videoDetails.videoId === vid) {
+          resp = pr;
+        }
       }
       if (!resp && pageWin.ytInitialPlayerResponse) {
-        resp = pageWin.ytInitialPlayerResponse;
+        const ipr = pageWin.ytInitialPlayerResponse;
+        if (ipr && ipr.videoDetails && ipr.videoDetails.videoId === vid) {
+          resp = ipr;
+        }
       }
 
       const tracks = resp &&
@@ -546,34 +678,68 @@
         resp.captions.playerCaptionsTracklistRenderer.captionTracks;
 
       if (tracks && tracks.length > 0) {
-        const respVid = resp.videoDetails && resp.videoDetails.videoId;
-        if (respVid && respVid !== vid) return;
-
-        let chosen = null;
+        // Clone plain properties out of XrayWrapper before inspecting
+        const plain = [];
         for (let i = 0; i < tracks.length; i++) {
           const t = tracks[i];
-          if (t && t.languageCode === "si") { chosen = t; break; }
+          if (t && t.baseUrl) plain.push({ languageCode: String(t.languageCode || ""), baseUrl: String(t.baseUrl) });
         }
-        if (!chosen) {
-          for (let i = 0; i < tracks.length; i++) {
-            const t = tracks[i];
-            if (t && t.languageCode && t.languageCode.startsWith("en")) { chosen = t; break; }
-          }
-        }
-        if (!chosen) chosen = tracks[0];
-
+        const chosen = pickBestCaptionTrack(plain);
         if (chosen && chosen.baseUrl) {
-          lastDiscoveredVideoId = vid;
-          fetchSinhalaSameOrigin(chosen.baseUrl);
+          fetchSinhalaTrack(chosen.baseUrl, vid);
+          return true;
         }
       }
     } catch (e) {}
+    return false;
   }
 
-  // Always show Sinhala CC whenever Killer X YT's CC toggle is ON & a video has captions!
-  // (Fixes the bug where YouTube defaults its own CC button to OFF after reopening the app.)
+  // Layer 2 (100% Zero-Reload SPA Fix!): Silently fetch m.youtube.com/watch?v=VID HTML (0 KB Anytime Data!)
+  function tryWatchPageDiscovery(vid) {
+    const now = Date.now();
+    if (watchFetchInFlightVid === vid) return;
+    if (watchFetchAttempts >= 4) return;
+    if (now - lastWatchFetchTime < 2200) return;
+
+    watchFetchInFlightVid = vid;
+    watchFetchAttempts++;
+    lastWatchFetchTime = now;
+
+    const watchUrl = `${location.origin}/watch?v=${encodeURIComponent(vid)}`;
+    pageFetch(watchUrl, { credentials: "include" })
+      .then((r) => (r.ok ? r.text() : ""))
+      .then((html) => {
+        if (watchFetchInFlightVid === vid) watchFetchInFlightVid = "";
+        if (getCurrentVideoId() !== vid) return;
+        if (directSinhalaVideoId === vid && directSinhalaCues.length > 0) return;
+
+        const tracks = extractCaptionTracksFromHtml(html);
+        const chosen = pickBestCaptionTrack(tracks);
+        if (chosen && chosen.baseUrl) {
+          fetchSinhalaTrack(chosen.baseUrl, vid);
+        }
+      })
+      .catch(() => {
+        if (watchFetchInFlightVid === vid) watchFetchInFlightVid = "";
+      });
+  }
+
+  function discoverCaptionsForCurrentVideo() {
+    if (!config.ccEnabled) return;
+    const vid = getCurrentVideoId();
+    if (!vid) return;
+    if (directSinhalaVideoId === vid && directSinhalaCues.length > 0) return;
+
+    const foundInPlayer = tryPlayerObjectDiscovery(vid);
+    if (!foundInPlayer) {
+      tryWatchPageDiscovery(vid);
+    }
+  }
+
   function syncDirectTrack() {
     if (!config.ccEnabled || directSinhalaCues.length === 0) return;
+    const vid = getCurrentVideoId();
+    if (!vid || (directSinhalaVideoId && directSinhalaVideoId !== vid)) return;
 
     const v = getMainVideo();
     if (!v) return;
@@ -636,19 +802,36 @@
 
   function checkNavigation() {
     const vid = getCurrentVideoId();
-    // Only reset subtitles when the ACTUAL video ID changes (opening YT settings/quality menu keeps same vid!)
     if (vid !== lastActiveVideoId) {
       lastActiveVideoId = vid;
-      directSinhalaCues = [];
-      lastSiLine = "";
-      lastDomText = "";
-      lastDiscoveredVideoId = "";
-      fetchedUrls.clear();
+      // Never wipe cues if they ALREADY match the new videoId!
+      if (directSinhalaVideoId !== vid) {
+        directSinhalaCues = [];
+        directSinhalaVideoId = "";
+        lastSiLine = "";
+        lastDomText = "";
+        watchFetchInFlightVid = "";
+        watchFetchAttempts = 0;
+        lastWatchFetchTime = 0;
+        fetchedUrls.clear();
+        postBg({ type: "clearTrack", videoId: vid });
+        postBg({ type: "hideSubtitle" });
+      }
       userPaused = false;
-      postBg({ type: "clearTrack" });
-      postBg({ type: "hideSubtitle" });
+      if (vid) {
+        discoverCaptionsForCurrentVideo();
+      }
     }
   }
+
+  // React immediately to YouTube SPA navigation events (zero delay!)
+  window.addEventListener("yt-navigate-finish", () => {
+    checkNavigation();
+    setTimeout(discoverCaptionsForCurrentVideo, 250);
+  }, true);
+  window.addEventListener("popstate", () => {
+    setTimeout(checkNavigation, 100);
+  }, true);
 
   function handleBgMessage(msg) {
     if (!msg || typeof msg !== "object") return;
@@ -660,23 +843,25 @@
         postBg({ type: "hideSubtitle" });
       }
     } else if (msg.type === "resync") {
-      // MainActivity just reopened! Re-emit current subtitle & re-discover if needed.
+      checkNavigation();
       lastSiLine = "";
       lastDomText = "";
-      if (directSinhalaCues.length > 0) {
+      const vid = getCurrentVideoId();
+      if (vid && directSinhalaVideoId === vid && directSinhalaCues.length > 0) {
         postBg({ type: "trackLoaded", count: directSinhalaCues.length });
         syncDirectTrack();
-      } else {
-        lastDiscoveredVideoId = "";
+      } else if (vid) {
+        watchFetchAttempts = 0;
+        lastWatchFetchTime = 0;
         fetchedUrls.clear();
-        tryDiscoverCaptionTrackFromPlayer();
+        discoverCaptionsForCurrentVideo();
       }
     } else if (msg.type === "timedTextUrl" && msg.url) {
-      fetchSinhalaSameOrigin(msg.url);
+      checkNavigation();
+      fetchSinhalaTrack(msg.url, msg.videoId || getCurrentVideoId());
     } else if (msg.type === "directSinhalaTrack" && Array.isArray(msg.cues) && msg.cues.length > 0) {
-      directSinhalaCues = msg.cues.slice().sort((a, b) => a.start - b.start);
-      lastSiLine = "";
-      syncDirectTrack();
+      checkNavigation();
+      applyDirectCues(msg.videoId || getCurrentVideoId(), msg.cues);
     } else if (msg.type === "mediaControl" && msg.cmd) {
       handleMediaControl(msg.cmd);
     } else if (msg.type === "setPip") {
@@ -690,9 +875,9 @@
     }
   }
 
-  setInterval(checkNavigation, 350);
+  setInterval(checkNavigation, 250);
   setInterval(attachAntiAutoPauseGuard, 500);
-  setInterval(tryDiscoverCaptionTrackFromPlayer, 800);
+  setInterval(discoverCaptionsForCurrentVideo, 900);
   setInterval(skipYouTubeAds, 250);
   setInterval(reportMediaState, 500);
   setInterval(syncDirectTrack, 120);
