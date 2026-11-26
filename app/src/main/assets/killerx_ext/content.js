@@ -5,13 +5,18 @@
   let config = {
     ccEnabled: true,
     ytPackageMode: true,
+    dualSub: false,
     adShield: true,
     bgPlayEnabled: true
   };
 
-  const pageFetch = (typeof content !== "undefined" && typeof content.fetch === "function")
-    ? content.fetch.bind(content)
-    : fetch.bind(window);
+  // Standard content-script window.fetch runs with the page's exact origin & first-party cookies
+  // WITHOUT Firefox Xray compartment "Permission denied to access property credentials" errors!
+  function safeFetchText(url) {
+    return window.fetch(url, { credentials: "include" })
+      .then((r) => (r.ok ? r.text() : ""))
+      .catch(() => "");
+  }
 
   let bgPort = null;
   let inPipMode = false;
@@ -103,7 +108,7 @@
   }, 2500);
 
   // =========================================================================
-  // 2. COSMETIC AD HIDER + YOUTUBE VIDEO AD AUTO-SKIPPER
+  // 2. COSMETIC AD HIDER + YOUTUBE VIDEO AD AUTO-SKIPPER + CLEAN CAPTION CSS
   // =========================================================================
   const AD_CSS = `
     ytd-ad-slot-renderer,
@@ -137,19 +142,42 @@
     }
   `;
 
+  // Hide YouTube's built-in caption box visually (opacity:0 keeps DOM text readable!) when our native overlay is active
+  const HIDE_NATIVE_YT_CC_CSS = `
+    .ytp-caption-window-container,
+    .caption-window {
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+  `;
+
   function ensureAdCss() {
     const existing = document.getElementById("kx-adblock-css");
     if (!config.adShield) {
       if (existing) existing.remove();
-      return;
+    } else if (!existing) {
+      const root = document.head || document.documentElement;
+      if (root) {
+        const style = document.createElement("style");
+        style.id = "kx-adblock-css";
+        style.textContent = AD_CSS;
+        root.appendChild(style);
+      }
     }
-    if (existing) return;
-    const root = document.head || document.documentElement;
-    if (!root) return;
-    const style = document.createElement("style");
-    style.id = "kx-adblock-css";
-    style.textContent = AD_CSS;
-    root.appendChild(style);
+
+    const ccCss = document.getElementById("kx-hide-yt-cc-css");
+    const shouldHideYtCc = config.ccEnabled && !config.dualSub && config.ytPackageMode;
+    if (!shouldHideYtCc) {
+      if (ccCss) ccCss.remove();
+    } else if (!ccCss) {
+      const root = document.head || document.documentElement;
+      if (root) {
+        const style = document.createElement("style");
+        style.id = "kx-hide-yt-cc-css";
+        style.textContent = HIDE_NATIVE_YT_CC_CSS;
+        root.appendChild(style);
+      }
+    }
   }
 
   let wasMutedByAd = false;
@@ -232,7 +260,6 @@
     v.addEventListener("play", () => {
       userPaused = false;
       reportMediaState();
-      // Trigger immediate caption discovery whenever a video starts playing!
       discoverCaptionsForCurrentVideo();
     });
 
@@ -353,7 +380,7 @@
   }
 
   // =========================================================================
-  // 5. ZERO-RELOAD 0ms SINHALA CC ENGINE (SPA Watch-Page Discovery + Same-Origin + BG Fallback)
+  // 5. ZERO-RELOAD 0ms SINHALA CC ENGINE (YT Package Mode POT-Ready!)
   // =========================================================================
   let directSinhalaCues = [];
   let directSinhalaVideoId = "";
@@ -364,6 +391,7 @@
   let watchFetchAttempts = 0;
   let lastWatchFetchTime = 0;
   const fetchedUrls = new Set();
+  const autoClickedCcVids = new Set();
 
   function cleanCue(text) {
     return (text || "")
@@ -482,7 +510,6 @@
     return url + (url.includes("?") ? "&" : "?") + "tlang=si";
   }
 
-  // Normalize www.youtube.com/api/timedtext -> m.youtube.com/api/timedtext so same-origin fetch NEVER hits CORS!
   function toSameOriginUrl(url) {
     try {
       const u = new URL(url, location.origin);
@@ -509,7 +536,6 @@
     if (!Array.isArray(cues) || cues.length === 0) return;
     if (videoId && curVid && videoId !== curVid) return;
 
-    // Sync active video ID first so checkNavigation() never wipes these freshly loaded cues!
     if (curVid) lastActiveVideoId = curVid;
     directSinhalaVideoId = videoId || curVid;
     directSinhalaCues = cues.slice().sort((a, b) => a.start - b.start);
@@ -529,31 +555,22 @@
     fetchedUrls.add(siSameOrigin);
     if (fetchedUrls.size > 50) fetchedUrls.clear();
 
-    pageFetch(siSameOrigin, { credentials: "include" })
-      .then((r) => (r.ok ? r.text() : ""))
-      .then((txt) => {
-        const cues = parseTimedText(txt);
-        if (cues.length > 0) {
-          applyDirectCues(vid, cues);
-          return;
+    safeFetchText(siSameOrigin).then((txt) => {
+      const cues = parseTimedText(txt);
+      if (cues.length > 0) {
+        applyDirectCues(vid, cues);
+        return;
+      }
+      const jsonUrl = siSameOrigin.includes("fmt=json3") ? siSameOrigin : (siSameOrigin + "&fmt=json3");
+      return safeFetchText(jsonUrl).then((txt2) => {
+        const cues2 = parseTimedText(txt2);
+        if (cues2.length > 0) {
+          applyDirectCues(vid, cues2);
+        } else {
+          postBg({ type: "fetchTimedText", url: siOriginal, videoId: vid });
         }
-        // Retry with fmt=json3 same-origin
-        const jsonUrl = siSameOrigin.includes("fmt=json3") ? siSameOrigin : (siSameOrigin + "&fmt=json3");
-        return pageFetch(jsonUrl, { credentials: "include" })
-          .then((r2) => (r2.ok ? r2.text() : ""))
-          .then((txt2) => {
-            const cues2 = parseTimedText(txt2);
-            if (cues2.length > 0) {
-              applyDirectCues(vid, cues2);
-            } else {
-              // Last resort: ask background.js (CORS-free <all_urls>) to fetch original URL
-              postBg({ type: "fetchTimedText", url: siOriginal, videoId: vid });
-            }
-          });
-      })
-      .catch(() => {
-        postBg({ type: "fetchTimedText", url: siOriginal, videoId: vid });
       });
+    });
   }
 
   function pickBestCaptionTrack(tracks) {
@@ -573,7 +590,6 @@
     return null;
   }
 
-  // Balanced JSON array extractor that handles raw JSON, escaped \", AND hex-escaped \x22 in m.youtube.com HTML!
   function parseBalancedArrayAt(str, bracketStart) {
     if (str[bracketStart] !== "[") return null;
     let depth = 0;
@@ -606,7 +622,6 @@
   function extractCaptionTracksFromHtml(html) {
     if (!html || html.length < 100) return null;
 
-    // Case 1: Raw JSON `"captionTracks":[...]`
     let pos = html.indexOf('"captionTracks":');
     if (pos >= 0) {
       let s = pos + 16;
@@ -615,7 +630,6 @@
       if (arr) return arr;
     }
 
-    // Case 2: Hex-escaped `\x22captionTracks\x22:` (common in m.youtube.com mobile HTML!)
     let hexPos = html.indexOf("\\x22captionTracks\\x22:");
     if (hexPos >= 0) {
       const slice = html.slice(hexPos, hexPos + 120000)
@@ -631,7 +645,6 @@
       }
     }
 
-    // Case 3: Backslash-escaped `\"captionTracks\":`
     let escPos = html.indexOf('\\"captionTracks\\":');
     if (escPos >= 0) {
       const slice = html.slice(escPos, escPos + 120000)
@@ -651,7 +664,6 @@
     return null;
   }
 
-  // Layer 1: Try reading fresh captionTracks from YouTube's in-memory player object
   function tryPlayerObjectDiscovery(vid) {
     try {
       const pageWin = window.wrappedJSObject || window;
@@ -678,7 +690,6 @@
         resp.captions.playerCaptionsTracklistRenderer.captionTracks;
 
       if (tracks && tracks.length > 0) {
-        // Clone plain properties out of XrayWrapper before inspecting
         const plain = [];
         for (let i = 0; i < tracks.length; i++) {
           const t = tracks[i];
@@ -694,11 +705,10 @@
     return false;
   }
 
-  // Layer 2 (100% Zero-Reload SPA Fix!): Silently fetch m.youtube.com/watch?v=VID HTML (0 KB Anytime Data!)
   function tryWatchPageDiscovery(vid) {
     const now = Date.now();
     if (watchFetchInFlightVid === vid) return;
-    if (watchFetchAttempts >= 4) return;
+    if (watchFetchAttempts >= 3) return;
     if (now - lastWatchFetchTime < 2200) return;
 
     watchFetchInFlightVid = vid;
@@ -706,22 +716,39 @@
     lastWatchFetchTime = now;
 
     const watchUrl = `${location.origin}/watch?v=${encodeURIComponent(vid)}`;
-    pageFetch(watchUrl, { credentials: "include" })
-      .then((r) => (r.ok ? r.text() : ""))
-      .then((html) => {
-        if (watchFetchInFlightVid === vid) watchFetchInFlightVid = "";
-        if (getCurrentVideoId() !== vid) return;
-        if (directSinhalaVideoId === vid && directSinhalaCues.length > 0) return;
+    safeFetchText(watchUrl).then((html) => {
+      if (watchFetchInFlightVid === vid) watchFetchInFlightVid = "";
+      if (getCurrentVideoId() !== vid) return;
+      if (directSinhalaVideoId === vid && directSinhalaCues.length > 0) return;
 
-        const tracks = extractCaptionTracksFromHtml(html);
-        const chosen = pickBestCaptionTrack(tracks);
-        if (chosen && chosen.baseUrl) {
-          fetchSinhalaTrack(chosen.baseUrl, vid);
-        }
-      })
-      .catch(() => {
-        if (watchFetchInFlightVid === vid) watchFetchInFlightVid = "";
-      });
+      const tracks = extractCaptionTracksFromHtml(html);
+      const chosen = pickBestCaptionTrack(tracks);
+      if (chosen && chosen.baseUrl) {
+        fetchSinhalaTrack(chosen.baseUrl, vid);
+      }
+    });
+  }
+
+  // Trigger YouTube's own CC once per video if no track loaded yet so YouTube fires its real POT-signed request!
+  function ensurePlayerCaptionsTriggeredOnce(vid) {
+    if (!config.ccEnabled || !vid) return;
+    if (autoClickedCcVids.has(vid)) return;
+    if (directSinhalaVideoId === vid && directSinhalaCues.length > 0) return;
+    if (document.querySelector(".ytp-caption-segment")) {
+      autoClickedCcVids.add(vid);
+      return;
+    }
+
+    const v = getMainVideo();
+    if (!v || v.currentTime < 0.4) return;
+
+    const ccBtn = document.querySelector(".ytp-subtitles-button, button.ytm-closed-captioning-button");
+    if (ccBtn && ccBtn.getAttribute("aria-pressed") === "false") {
+      autoClickedCcVids.add(vid);
+      try {
+        ccBtn.click();
+      } catch (e) {}
+    }
   }
 
   function discoverCaptionsForCurrentVideo() {
@@ -734,6 +761,7 @@
     if (!foundInPlayer) {
       tryWatchPageDiscovery(vid);
     }
+    ensurePlayerCaptionsTriggeredOnce(vid);
   }
 
   function syncDirectTrack() {
@@ -747,7 +775,11 @@
     let currentOrig = "";
     const ytSegs = document.querySelectorAll(".ytp-caption-segment");
     if (ytSegs.length > 0) {
-      currentOrig = Array.from(ytSegs).map((e) => (e.textContent || "").trim()).filter(Boolean).join(" ");
+      const txt = Array.from(ytSegs).map((e) => (e.textContent || "").trim()).filter(Boolean).join(" ");
+      // Only use as "original" if it isn't already Sinhala
+      if (txt && !/[\u0D80-\u0DFF]/.test(txt)) {
+        currentOrig = txt;
+      }
     }
 
     const now = v.currentTime;
@@ -779,13 +811,20 @@
   function readDomFallback() {
     if (!config.ccEnabled || directSinhalaCues.length > 0) return;
     const segs = document.querySelectorAll(".ytp-caption-segment");
-    if (segs.length === 0) return;
+    if (segs.length === 0) {
+      if (lastDomText !== "") {
+        lastDomText = "";
+        postBg({ type: "hideSubtitle" });
+      }
+      return;
+    }
     const clean = Array.from(segs).map((e) => (e.textContent || "").trim()).filter(Boolean).join(" ").trim();
     if (!clean || clean === lastDomText) return;
     lastDomText = clean;
 
+    // Redirected Sinhala captions from YouTube's player appear directly here (0 KB Anytime Data!)
     if (/[\u0D80-\u0DFF]/.test(clean)) {
-      postBg({ type: "showSubtitle", si: clean, orig: "", mode: "YouTube Sinhala CC" });
+      postBg({ type: "showSubtitle", si: clean, orig: "", mode: "YouTube Native (YT Pkg)" });
       return;
     }
 
@@ -804,7 +843,6 @@
     const vid = getCurrentVideoId();
     if (vid !== lastActiveVideoId) {
       lastActiveVideoId = vid;
-      // Never wipe cues if they ALREADY match the new videoId!
       if (directSinhalaVideoId !== vid) {
         directSinhalaCues = [];
         directSinhalaVideoId = "";
@@ -824,7 +862,6 @@
     }
   }
 
-  // React immediately to YouTube SPA navigation events (zero delay!)
   window.addEventListener("yt-navigate-finish", () => {
     checkNavigation();
     setTimeout(discoverCaptionsForCurrentVideo, 250);
@@ -881,5 +918,5 @@
   setInterval(skipYouTubeAds, 250);
   setInterval(reportMediaState, 500);
   setInterval(syncDirectTrack, 120);
-  setInterval(readDomFallback, 160);
+  setInterval(readDomFallback, 150);
 })();

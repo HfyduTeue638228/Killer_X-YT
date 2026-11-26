@@ -170,6 +170,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             put("type", "config")
             put("ccEnabled", ccEnabled)
             put("ytPackageMode", ytPackageMode)
+            put("dualSub", dualSub)
             put("adShield", adShield)
             put("bgPlayEnabled", bgPlayEnabled)
         }

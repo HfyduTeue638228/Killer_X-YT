@@ -1,6 +1,7 @@
 let config = {
   ccEnabled: true,
   ytPackageMode: true,
+  dualSub: false,
   adShield: true,
   bgPlayEnabled: true
 };
@@ -21,6 +22,7 @@ function applyConfig(msg) {
   if (!msg || typeof msg !== "object") return;
   if (typeof msg.ccEnabled === "boolean") config.ccEnabled = msg.ccEnabled;
   if (typeof msg.ytPackageMode === "boolean") config.ytPackageMode = msg.ytPackageMode;
+  if (typeof msg.dualSub === "boolean") config.dualSub = msg.dualSub;
   if (typeof msg.adShield === "boolean") config.adShield = msg.adShield;
   if (typeof msg.bgPlayEnabled === "boolean") config.bgPlayEnabled = msg.bgPlayEnabled;
   broadcastToContent({ type: "config", config });
@@ -142,6 +144,26 @@ function extractVideoIdFromUrl(url) {
   }
 }
 
+function isSinhalaTimedTextUrl(url) {
+  return /[?&](tlang|lang)=si(&|$)/i.test(url || "");
+}
+
+function toYouTubeSinhalaUrl(url) {
+  if (/[?&]lang=si(&|$)/i.test(url)) return url;
+  if (/([?&])tlang=[^&]*/i.test(url)) {
+    return url.replace(/([?&])tlang=[^&]*/i, "$1tlang=si");
+  }
+  return url + (url.includes("?") ? "&" : "?") + "tlang=si";
+}
+
+function publishCapturedCues(videoId, cues) {
+  if (!Array.isArray(cues) || cues.length === 0) return;
+  latestVideoId = videoId || latestVideoId;
+  latestDirectCues = cues;
+  broadcastToContent({ type: "directSinhalaTrack", videoId: latestVideoId, cues });
+  sendToNative({ type: "trackLoaded", count: cues.length });
+}
+
 function fetchTimedTextCorsFree(siUrl, videoId) {
   if (!siUrl || !siUrl.includes("/api/timedtext")) return;
   ourFetchedUrls.add(siUrl);
@@ -152,10 +174,7 @@ function fetchTimedTextCorsFree(siUrl, videoId) {
     .then((txt) => {
       const cues = parseTimedText(txt);
       if (cues.length > 0) {
-        latestVideoId = videoId || extractVideoIdFromUrl(siUrl);
-        latestDirectCues = cues;
-        broadcastToContent({ type: "directSinhalaTrack", videoId: latestVideoId, cues });
-        sendToNative({ type: "trackLoaded", count: cues.length });
+        publishCapturedCues(videoId || extractVideoIdFromUrl(siUrl), cues);
       } else if (!siUrl.includes("fmt=json3")) {
         const jsonUrl = siUrl + "&fmt=json3";
         ourFetchedUrls.add(jsonUrl);
@@ -165,10 +184,7 @@ function fetchTimedTextCorsFree(siUrl, videoId) {
           .then((txt2) => {
             const cues2 = parseTimedText(txt2);
             if (cues2.length > 0) {
-              latestVideoId = videoId || extractVideoIdFromUrl(siUrl);
-              latestDirectCues = cues2;
-              broadcastToContent({ type: "directSinhalaTrack", videoId: latestVideoId, cues: cues2 });
-              sendToNative({ type: "trackLoaded", count: cues2.length });
+              publishCapturedCues(videoId || extractVideoIdFromUrl(siUrl), cues2);
             }
           })
           .catch(() => {});
@@ -198,7 +214,6 @@ browser.runtime.onConnect.addListener((port) => {
     if (!msg || typeof msg !== "object") return;
 
     if (msg.type === "clearTrack") {
-      // Only clear if the cached track belongs to a DIFFERENT videoId than the newly navigated video!
       if (!msg.videoId || msg.videoId !== latestVideoId) {
         latestTimedTextUrl = "";
         latestVideoId = "";
@@ -246,7 +261,7 @@ browser.runtime.onConnect.addListener((port) => {
 });
 
 // =========================================================================
-// 1. REAL FIREFOX NETWORK AD BLOCKER (Zero Google Auth False Positives!)
+// 1. REAL FIREFOX NETWORK AD BLOCKER + NATIVE YOUTUBE TIMEDTEXT REDIRECT!
 // =========================================================================
 const AD_HOSTS = new Set([
   "doubleclick.net",
@@ -303,13 +318,74 @@ function isAdHost(hostname) {
   return false;
 }
 
+// Passively tap the exact bytes of a Sinhala /api/timedtext response (ZERO extra network requests!)
+function attachSinhalaResponseTap(requestId, videoId) {
+  try {
+    if (typeof browser.webRequest.filterResponseData !== "function") return;
+    const filter = browser.webRequest.filterResponseData(requestId);
+    const decoder = new TextDecoder("utf-8");
+    let rawBody = "";
+
+    filter.ondata = (event) => {
+      try {
+        rawBody += decoder.decode(event.data, { stream: true });
+      } catch (e) {}
+      filter.write(event.data);
+    };
+
+    filter.onstop = () => {
+      try {
+        rawBody += decoder.decode();
+        const cues = parseTimedText(rawBody);
+        if (cues.length > 0) {
+          publishCapturedCues(videoId, cues);
+        }
+      } catch (e) {}
+      try {
+        filter.close();
+      } catch (e) {}
+    };
+
+    filter.onerror = () => {
+      try {
+        filter.disconnect();
+      } catch (e) {}
+    };
+  } catch (e) {}
+}
+
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (!config.adShield) return {};
-    if (details.type === "main_frame") return {};
     const url = details.url || "";
     if (!url.startsWith("http")) return {};
-    if (url.includes("/api/timedtext")) return {};
+
+    // [A] YouTube /api/timedtext handler (0 KB Anytime Data + 100% POT Token Compatible!)
+    if (url.includes("/api/timedtext")) {
+      if (!config.ccEnabled) return {};
+      const vid = extractVideoIdFromUrl(url);
+
+      // If already a Sinhala timedtext request, passively tap its response stream!
+      if (isSinhalaTimedTextUrl(url)) {
+        if (!ourFetchedUrls.has(url)) {
+          attachSinhalaResponseTap(details.requestId, vid);
+        }
+        return {};
+      }
+
+      // In YouTube Package Mode (when Dual Subtitles is OFF), redirect YouTube's OWN pot-signed
+      // request directly to &tlang=si! Keeps pot, signature, cookies & all YouTube headers intact!
+      if (config.ytPackageMode && !config.dualSub && !ourFetchedUrls.has(url)) {
+        const siUrl = toYouTubeSinhalaUrl(url);
+        if (siUrl !== url) {
+          return { redirectUrl: siUrl };
+        }
+      }
+      return {};
+    }
+
+    // [B] Ad Blocker
+    if (!config.adShield) return {};
+    if (details.type === "main_frame") return {};
 
     try {
       const parsed = new URL(url);
@@ -327,7 +403,7 @@ browser.webRequest.onBeforeRequest.addListener(
 );
 
 // =========================================================================
-// 2. NATIVE YOUTUBE SINHALA CC SNIFFER (&tlang=si -> 0 KB Anytime Data!)
+// 2. NATIVE YOUTUBE SINHALA CC PARSER & BACKUP SNIFFER
 // =========================================================================
 function cleanCue(text) {
   return (text || "")
@@ -412,14 +488,6 @@ function parseTimedText(rawText) {
   return cues;
 }
 
-function toYouTubeSinhalaUrl(url) {
-  if (/[?&]lang=si(&|$)/i.test(url)) return url;
-  if (/([?&])tlang=[^&]*/i.test(url)) {
-    return url.replace(/([?&])tlang=[^&]*/i, "$1tlang=si");
-  }
-  return url + (url.includes("?") ? "&" : "?") + "tlang=si";
-}
-
 browser.webRequest.onCompleted.addListener(
   (details) => {
     if (!config.ccEnabled) return;
@@ -429,6 +497,10 @@ browser.webRequest.onCompleted.addListener(
 
     const siUrl = toYouTubeSinhalaUrl(url);
     const vid = extractVideoIdFromUrl(siUrl);
+
+    // If filterResponseData already captured cues for this video, skip duplicate fetch
+    if (vid && vid === latestVideoId && latestDirectCues.length > 0) return;
+
     const now = Date.now();
     const prev = recentTimedText.get(siUrl);
     if (prev && now - prev < 5000) return;
