@@ -1,4 +1,5 @@
-Killer X YT v2.7 Update:
-- Official YouTube App-Style UI: Removed top browser bar, added Killer X Splash Screen, pure #0F0F0F dark theme & sticky video player!
-- Native Top-Bar Controls next to Search icon (Sleep Timer, PiP, CC/Settings)
-- New Sleep Timer (15, 30, 60, 120 minutes) — automatically stops playback & closes the app cleanly when time is up (works even with screen OFF!)
+Killer X YT v2.7.1 Update:
+- Official App-Style Dark UI with custom Killer X YT branding
+- Fixed CC, PiP & Sleep Timer buttons next to the Search icon
+- New Sleep Timer (15, 30, 60, 120 minutes) — auto-closes the app when time is up
+- Improved Live Sinhala CC translator for all subtitle languages

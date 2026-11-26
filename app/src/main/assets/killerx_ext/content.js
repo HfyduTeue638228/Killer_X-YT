@@ -99,10 +99,9 @@
   }, 2500);
 
   // =========================================================================
-  // 2. OFFICIAL YOUTUBE APP UI SKIN + NATIVE CONTROLS NEXT TO SEARCH ICON!
+  // 2. OFFICIAL APP UI SKIN + KILLER X YT BRANDING + BULLETPROOF CC/PIP/SLEEP CONTROLS
   // =========================================================================
   const NATIVE_APP_UI_CSS = `
-    /* Pure YouTube Android App dark theme & zero browser feel */
     html, body {
       background-color: #0f0f0f !important;
       overscroll-behavior-y: contain !important;
@@ -126,18 +125,22 @@
       user-select: text !important;
     }
 
-    /* Official YouTube Android App Header & Bottom Nav polish */
     ytm-mobile-topbar-renderer,
     header.mobile-topbar-header {
       background-color: #0f0f0f !important;
       border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+    }
+    .mobile-topbar-header-content {
+      overflow: visible !important;
+      display: flex !important;
+      align-items: center !important;
     }
     ytm-pivot-bar-renderer {
       background-color: #0f0f0f !important;
       border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
     }
 
-    /* Hide mobile web "Open in YouTube App" banners & upsells */
+    /* Hide mobile web "Open in App" banners & upsells */
     ytm-upsell-dialog-renderer,
     ytm-mealbar-promo-renderer,
     .open-in-app-banner,
@@ -147,7 +150,7 @@
       display: none !important;
     }
 
-    /* Sticky video player on Watch pages (like official YouTube Android App!) */
+    /* Sticky video player on Watch pages */
     ytm-watch .player-container.sticky-player,
     .player-container.sticky-player {
       position: sticky !important;
@@ -156,25 +159,71 @@
       background: #000 !important;
     }
 
-    /* Native Killer X Controls injected right next to YouTube's Search icon */
+    /* Hide YouTube's original wordmark SVGs once Killer X YT brand is attached */
+    .kx-brand-host > *:not(#kx-brand-badge) {
+      display: none !important;
+    }
+    #kx-brand-badge {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 6px !important;
+      padding: 2px 4px 2px 2px !important;
+      text-decoration: none !important;
+      cursor: pointer !important;
+      flex-shrink: 0 !important;
+      white-space: nowrap !important;
+    }
+    .kx-brand-icon {
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      width: 26px !important;
+      height: 19px !important;
+      border-radius: 5px !important;
+      background: #e50914 !important;
+      flex-shrink: 0 !important;
+    }
+    .kx-brand-icon svg {
+      width: 11px !important;
+      height: 11px !important;
+      fill: #ffffff !important;
+    }
+    .kx-brand-text {
+      font-family: Roboto, Arial, sans-serif !important;
+      font-size: 15px !important;
+      font-weight: 800 !important;
+      letter-spacing: -0.3px !important;
+      color: #ffffff !important;
+      line-height: 1 !important;
+    }
+    .kx-brand-yt {
+      font-family: Roboto, Arial, sans-serif !important;
+      font-size: 11px !important;
+      font-weight: 800 !important;
+      color: #ff3b30 !important;
+      margin-left: 2px !important;
+      line-height: 1 !important;
+    }
+
+    /* Native Killer X Controls next to Search icon */
     #kx-header-controls {
       display: inline-flex !important;
       align-items: center !important;
       gap: 4px !important;
       margin-right: 4px !important;
       flex-shrink: 0 !important;
-      z-index: 20 !important;
+      z-index: 50 !important;
     }
     .kx-hdr-btn {
       display: inline-flex !important;
       align-items: center !important;
       justify-content: center !important;
-      height: 32px !important;
-      min-width: 32px !important;
+      height: 30px !important;
+      min-width: 30px !important;
       padding: 0 7px !important;
       border: none !important;
-      border-radius: 16px !important;
-      background: rgba(255, 255, 255, 0.10) !important;
+      border-radius: 15px !important;
+      background: rgba(255, 255, 255, 0.12) !important;
       color: #f1f1f1 !important;
       font-family: Roboto, Arial, sans-serif !important;
       font-size: 11px !important;
@@ -183,47 +232,51 @@
       cursor: pointer !important;
       box-sizing: border-box !important;
       gap: 3px !important;
-      transition: background 0.15s ease !important;
+      white-space: nowrap !important;
+      flex-shrink: 0 !important;
     }
     .kx-hdr-btn:active {
-      background: rgba(255, 255, 255, 0.24) !important;
-      transform: scale(0.95) !important;
+      background: rgba(255, 255, 255, 0.26) !important;
+      transform: scale(0.94) !important;
     }
     .kx-hdr-btn svg {
-      width: 16px !important;
-      height: 16px !important;
+      width: 15px !important;
+      height: 15px !important;
       fill: currentColor !important;
       flex-shrink: 0 !important;
+      pointer-events: none !important;
     }
     .kx-hdr-btn.kx-cc-on {
       background: #e50914 !important;
       color: #ffffff !important;
+      padding: 0 9px !important;
     }
     .kx-hdr-btn.kx-cc-off {
-      background: rgba(255, 255, 255, 0.12) !important;
-      color: #9e9e9e !important;
+      background: rgba(255, 255, 255, 0.14) !important;
+      color: #aaaaaa !important;
+      padding: 0 9px !important;
     }
     .kx-hdr-btn.kx-sleep-on {
-      background: rgba(229, 9, 20, 0.25) !important;
+      background: rgba(229, 9, 20, 0.28) !important;
       border: 1px solid #ff3b30 !important;
       color: #ffae52 !important;
       padding: 0 8px !important;
     }
 
-    /* Compact translucent fallback pill ONLY visible on Shorts / pages without a topbar */
+    /* Guaranteed fallback pill (auto-shown if header controls aren't visible, e.g., Shorts) */
     #kx-shorts-fallback {
       position: fixed !important;
-      top: 10px !important;
-      right: 10px !important;
+      top: 9px !important;
+      right: 52px !important;
       display: none !important;
       align-items: center !important;
-      gap: 5px !important;
-      z-index: 9999 !important;
-      background: rgba(15, 15, 15, 0.78) !important;
+      gap: 4px !important;
+      z-index: 2147483640 !important;
+      background: rgba(15, 15, 15, 0.88) !important;
       border: 1px solid rgba(255, 255, 255, 0.14) !important;
-      border-radius: 20px !important;
+      border-radius: 18px !important;
       padding: 3px 5px !important;
-      backdrop-filter: blur(6px) !important;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5) !important;
     }
     #kx-shorts-fallback.kx-show {
       display: inline-flex !important;
@@ -261,7 +314,21 @@
     }
   `;
 
-  // Ensure YouTube mobile stays in Dark Theme natively
+  // Pure DOM SVG factory — ZERO innerHTML, 100% immune to YouTube Trusted Types CSP!
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function makeSvgIcon(pathData) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", pathData);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  const PATH_MOON = "M12.1 22c-5.5 0-10-4.5-10-10 0-4.2 2.6-7.8 6.4-9.3.5-.2 1.1.3.9.9-.5 1.1-.8 2.3-.8 3.6 0 4.6 3.7 8.3 8.3 8.3 1.3 0 2.5-.3 3.6-.8.6-.2 1.1.4.9.9-1.5 3.8-5.1 6.4-9.3 6.4z";
+  const PATH_PIP = "M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z";
+  const PATH_PLAY = "M8 5v14l11-7z";
+
   function ensureYouTubeDarkMode() {
     try {
       if (!document.cookie.includes("f6=400")) {
@@ -274,41 +341,88 @@
   }
 
   function ensureStyles() {
-    const root = document.head || document.documentElement;
-    if (!root) return;
+    try {
+      const root = document.head || document.documentElement;
+      if (!root) return;
 
-    if (!document.getElementById("kx-native-ui-css")) {
-      const style = document.createElement("style");
-      style.id = "kx-native-ui-css";
-      style.textContent = NATIVE_APP_UI_CSS;
-      root.appendChild(style);
-    }
+      if (!document.getElementById("kx-native-ui-css")) {
+        const style = document.createElement("style");
+        style.id = "kx-native-ui-css";
+        style.textContent = NATIVE_APP_UI_CSS;
+        root.appendChild(style);
+      }
 
-    const existingAd = document.getElementById("kx-adblock-css");
-    if (!config.adShield) {
-      if (existingAd) existingAd.remove();
-    } else if (!existingAd) {
-      const style = document.createElement("style");
-      style.id = "kx-adblock-css";
-      style.textContent = AD_CSS;
-      root.appendChild(style);
-    }
+      const existingAd = document.getElementById("kx-adblock-css");
+      if (!config.adShield) {
+        if (existingAd) existingAd.remove();
+      } else if (!existingAd) {
+        const style = document.createElement("style");
+        style.id = "kx-adblock-css";
+        style.textContent = AD_CSS;
+        root.appendChild(style);
+      }
+    } catch (e) {}
   }
 
-  // SVG Icons (clean Material/YouTube vector style)
-  const SVG_MOON = '<svg viewBox="0 0 24 24"><path d="M12.1 22c-5.5 0-10-4.5-10-10 0-4.2 2.6-7.8 6.4-9.3.5-.2 1.1.3.9.9-.5 1.1-.8 2.3-.8 3.6 0 4.6 3.7 8.3 8.3 8.3 1.3 0 2.5-.3 3.6-.8.6-.2 1.1.4.9.9-1.5 3.8-5.1 6.4-9.3 6.4z"/></svg>';
-  const SVG_PIP = '<svg viewBox="0 0 24 24"><path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/></svg>';
+  function createKillerXBrandBadge() {
+    const badge = document.createElement("div");
+    badge.id = "kx-brand-badge";
+
+    const iconBox = document.createElement("span");
+    iconBox.className = "kx-brand-icon";
+    iconBox.appendChild(makeSvgIcon(PATH_PLAY));
+
+    const labelMain = document.createElement("span");
+    labelMain.className = "kx-brand-text";
+    labelMain.textContent = "Killer X";
+
+    const labelYt = document.createElement("span");
+    labelYt.className = "kx-brand-yt";
+    labelYt.textContent = "YT";
+
+    badge.appendChild(iconBox);
+    badge.appendChild(labelMain);
+    badge.appendChild(labelYt);
+    return badge;
+  }
+
+  // Replaces "YouTube" logo & page title inside the app with "Killer X YT"
+  function ensureKillerXBranding(header) {
+    try {
+      if (document.title && document.title.includes("YouTube")) {
+        document.title = document.title.replace(/YouTube/g, "Killer X YT");
+      }
+
+      if (!header) return;
+
+      // Find YouTube's top-left home logo container
+      const logoHost = header.querySelector(
+        "ytm-home-logo, #home-icon, button.mobile-topbar-header-endpoint, a.mobile-topbar-header-endpoint, [aria-label='YouTube Home'], [aria-label*='YouTube']"
+      );
+
+      if (logoHost) {
+        logoHost.classList.add("kx-brand-host");
+        if (!logoHost.querySelector("#kx-brand-badge")) {
+          logoHost.appendChild(createKillerXBrandBadge());
+        }
+      }
+    } catch (e) {}
+  }
 
   function createControlButtons(prefix) {
     const frag = document.createDocumentFragment();
 
-    // 1. Sleep Timer Button (🌙 + remaining min when active)
+    // 1. Sleep Timer Button (🌙 + live remaining min when active)
     const btnSleep = document.createElement("button");
     btnSleep.id = prefix + "-sleep";
     btnSleep.type = "button";
     btnSleep.className = "kx-hdr-btn";
     btnSleep.title = "Sleep Timer";
-    btnSleep.innerHTML = SVG_MOON;
+    btnSleep.appendChild(makeSvgIcon(PATH_MOON));
+    const sleepText = document.createElement("span");
+    sleepText.id = prefix + "-sleep-txt";
+    sleepText.style.display = "none";
+    btnSleep.appendChild(sleepText);
     btnSleep.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -321,7 +435,7 @@
     btnPip.type = "button";
     btnPip.className = "kx-hdr-btn";
     btnPip.title = "Picture-in-Picture";
-    btnPip.innerHTML = SVG_PIP;
+    btnPip.appendChild(makeSvgIcon(PATH_PIP));
     btnPip.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -348,96 +462,129 @@
   }
 
   function updateControlButtonsAppearance() {
-    const isCcOn = !!config.ccEnabled;
-    const sleepMin = Number(config.sleepRemainingMin) || 0;
+    try {
+      const isCcOn = !!config.ccEnabled;
+      const sleepMin = Number(config.sleepRemainingMin) || 0;
 
-    ["kx-hdr", "kx-fb"].forEach((prefix) => {
-      const btnCc = document.getElementById(prefix + "-cc");
-      if (btnCc) {
-        btnCc.className = "kx-hdr-btn " + (isCcOn ? "kx-cc-on" : "kx-cc-off");
-      }
-
-      const btnSleep = document.getElementById(prefix + "-sleep");
-      if (btnSleep) {
-        if (sleepMin > 0) {
-          btnSleep.className = "kx-hdr-btn kx-sleep-on";
-          btnSleep.innerHTML = SVG_MOON + "<span>" + sleepMin + "m</span>";
-        } else {
-          btnSleep.className = "kx-hdr-btn";
-          btnSleep.innerHTML = SVG_MOON;
+      ["kx-hdr", "kx-fb"].forEach((prefix) => {
+        const btnCc = document.getElementById(prefix + "-cc");
+        if (btnCc) {
+          btnCc.className = "kx-hdr-btn " + (isCcOn ? "kx-cc-on" : "kx-cc-off");
         }
-      }
-    });
+
+        const btnSleep = document.getElementById(prefix + "-sleep");
+        const sleepTxt = document.getElementById(prefix + "-sleep-txt");
+        if (btnSleep && sleepTxt) {
+          if (sleepMin > 0) {
+            btnSleep.className = "kx-hdr-btn kx-sleep-on";
+            sleepTxt.textContent = sleepMin + "m";
+            sleepTxt.style.display = "inline";
+          } else {
+            btnSleep.className = "kx-hdr-btn";
+            sleepTxt.textContent = "";
+            sleepTxt.style.display = "none";
+          }
+        }
+      });
+    } catch (e) {}
   }
 
-  function isElementVisible(el) {
+  function isElementVisibleOnScreen(el) {
     if (!el || !el.isConnected) return false;
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
-    const st = window.getComputedStyle(el);
-    return st.display !== "none" && st.visibility !== "hidden" && parseFloat(st.opacity || "1") > 0.05;
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width < 12 || r.height < 12) return false;
+      if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) return false;
+      const st = window.getComputedStyle(el);
+      return st.display !== "none" && st.visibility !== "hidden" && parseFloat(st.opacity || "1") > 0.1;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isSearchInputActuallyVisible() {
+    try {
+      const inputs = document.querySelectorAll("input.searchbox-input, input[name='search_query'], form.searchbox input");
+      for (let i = 0; i < inputs.length; i++) {
+        if (isElementVisibleOnScreen(inputs[i])) return true;
+      }
+    } catch (e) {}
+    return false;
   }
 
   function ensureHeaderControls() {
-    if (inPipMode || document.fullscreenElement) {
-      const fb = document.getElementById("kx-shorts-fallback");
-      if (fb) fb.classList.remove("kx-show");
-      return;
-    }
+    try {
+      if (inPipMode || document.fullscreenElement) {
+        const fb = document.getElementById("kx-shorts-fallback");
+        if (fb) fb.classList.remove("kx-show");
+        return;
+      }
 
-    const header = document.querySelector("ytm-mobile-topbar-renderer, header.mobile-topbar-header, header");
-    let hdrControls = document.getElementById("kx-header-controls");
+      const header = document.querySelector("ytm-mobile-topbar-renderer, header.mobile-topbar-header, header");
+      ensureKillerXBranding(header);
 
-    if (header) {
-      // Find YouTube's Search button inside the top header
-      const searchBtn = header.querySelector(
-        "button[aria-label*='Search'], button[aria-label*='search'], .topbar-menu-button-avatar-button, button.icon-button[aria-label*='Search']"
-      );
-      const contentBox = header.querySelector(".mobile-topbar-header-content") || (searchBtn && searchBtn.parentElement);
+      const searchInputOpen = isSearchInputActuallyVisible();
+      let hdrControls = document.getElementById("kx-header-controls");
 
-      // Hide controls while search input box is open so user has full space to type!
-      const isSearchInputOpen = !!header.querySelector("input.searchbox-input, input[name='search_query']");
-
-      if (contentBox && !isSearchInputOpen) {
-        if (!hdrControls) {
-          hdrControls = document.createElement("div");
-          hdrControls.id = "kx-header-controls";
-          hdrControls.appendChild(createControlButtons("kx-hdr"));
-        }
-
-        if (searchBtn && searchBtn.parentElement === contentBox) {
-          if (hdrControls.nextSibling !== searchBtn) {
-            contentBox.insertBefore(hdrControls, searchBtn);
+      if (header && !searchInputOpen) {
+        // Find YouTube's visible Search button inside the top header
+        let searchBtn = null;
+        const candidates = header.querySelectorAll(
+          "button[aria-label*='Search'], button[aria-label*='search'], button.icon-button.topbar-menu-button-avatar-button, .mobile-topbar-header-content button"
+        );
+        for (let i = 0; i < candidates.length; i++) {
+          const c = candidates[i];
+          if (c.closest("#kx-header-controls") || c.closest(".kx-brand-host")) continue;
+          if (isElementVisibleOnScreen(c)) {
+            searchBtn = c;
+            break;
           }
-        } else if (hdrControls.parentElement !== contentBox) {
-          contentBox.insertBefore(hdrControls, contentBox.firstChild);
         }
-        hdrControls.style.display = "inline-flex";
+
+        const contentBox =
+          (searchBtn && searchBtn.parentElement) ||
+          header.querySelector(".mobile-topbar-header-content");
+
+        if (contentBox) {
+          if (!hdrControls) {
+            hdrControls = document.createElement("div");
+            hdrControls.id = "kx-header-controls";
+            hdrControls.appendChild(createControlButtons("kx-hdr"));
+          }
+
+          if (searchBtn && searchBtn.parentElement === contentBox) {
+            if (hdrControls.nextSibling !== searchBtn) {
+              contentBox.insertBefore(hdrControls, searchBtn);
+            }
+          } else if (hdrControls.parentElement !== contentBox) {
+            contentBox.insertBefore(hdrControls, contentBox.firstChild);
+          }
+          hdrControls.style.display = "inline-flex";
+        }
       } else if (hdrControls) {
         hdrControls.style.display = "none";
       }
-    }
 
-    // Fallback corner pill ONLY when YouTube hides its topbar (e.g., on YouTube Shorts!)
-    let fb = document.getElementById("kx-shorts-fallback");
-    if (!fb && document.body) {
-      fb = document.createElement("div");
-      fb.id = "kx-shorts-fallback";
-      fb.appendChild(createControlButtons("kx-fb"));
-      document.body.appendChild(fb);
-    }
-
-    if (fb) {
-      const isSearchOpen = !!(header && header.querySelector("input.searchbox-input, input[name='search_query']"));
-      const headerVisible = isElementVisible(hdrControls);
-      if (!headerVisible && !isSearchOpen && !inPipMode && !document.fullscreenElement) {
-        fb.classList.add("kx-show");
-      } else {
-        fb.classList.remove("kx-show");
+      // Guaranteed fallback pill ONLY if header controls are NOT visibly on screen (e.g., Shorts / scrolled header)
+      let fb = document.getElementById("kx-shorts-fallback");
+      if (!fb && document.body) {
+        fb = document.createElement("div");
+        fb.id = "kx-shorts-fallback";
+        fb.appendChild(createControlButtons("kx-fb"));
+        document.body.appendChild(fb);
       }
-    }
 
-    updateControlButtonsAppearance();
+      if (fb) {
+        const hdrVisible = isElementVisibleOnScreen(hdrControls);
+        if (!hdrVisible && !searchInputOpen && !inPipMode && !document.fullscreenElement) {
+          fb.classList.add("kx-show");
+        } else {
+          fb.classList.remove("kx-show");
+        }
+      }
+
+      updateControlButtonsAppearance();
+    } catch (e) {}
   }
 
   let wasMutedByAd = false;
@@ -587,7 +734,7 @@
       const t = (el && (el.innerText || el.textContent) || "").trim();
       if (t) return t;
     }
-    return (document.title || "").replace(/\s*-\s*YouTube$/i, "").trim() || "Killer X YT";
+    return (document.title || "").replace(/\s*-\s*(YouTube|Killer X YT)$/i, "").trim() || "Killer X YT";
   }
 
   function handleMediaControl(cmd) {
@@ -704,7 +851,7 @@
     lastTranslateDispatchMs = Date.now();
 
     if (/[\u0D80-\u0DFF]/.test(cleanText)) {
-      showTranslatedLine(cleanText, "", "YouTube Sinhala CC");
+      showTranslatedLine(cleanText, "", "Sinhala CC");
       return;
     }
 
@@ -855,7 +1002,7 @@
 
   ensureYouTubeDarkMode();
   ensureStyles();
-  setInterval(ensureHeaderControls, 450);
+  setInterval(ensureHeaderControls, 350);
   setInterval(checkNavigation, 300);
   setInterval(ensureCaptionObserver, 1000);
   setInterval(attachAntiAutoPauseGuard, 500);

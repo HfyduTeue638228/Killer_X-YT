@@ -14,7 +14,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="10dp"
-            android:text="Killer X YT v2.7"
+            android:text="Killer X YT v2.7.1"
             android:textColor="@color/killer_red_glow"
             android:textSize="17sp"
             android:textStyle="bold" />
@@ -49,7 +49,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:buttonTint="@color/killer_red"
-            android:text="YouTube Package Mode (0 Anytime Data)"
+            android:text="YT Package Mode (0 Anytime Data)"
             android:textColor="@color/green_active" />
 
         <CheckBox
@@ -65,7 +65,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:buttonTint="@color/killer_red"
-            android:text="Block All YouTube Ads"
+            android:text="Block All Video &amp; Banner Ads"
             android:textColor="@color/text_primary" />
 
         <TextView
@@ -229,7 +229,7 @@
                 android:layout_marginEnd="6dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_shield_pill"
-                android:text="Reload YouTube"
+                android:text="Reload Page"
                 android:textAllCaps="false"
                 android:textColor="@color/killer_red_glow"
                 android:textSize="12sp" />

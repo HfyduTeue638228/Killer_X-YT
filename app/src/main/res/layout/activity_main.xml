@@ -31,7 +31,7 @@
                 android:gravity="center"
                 android:paddingStart="12dp"
                 android:paddingEnd="12dp"
-                android:text="◀ Back to YouTube"
+                android:text="◀ Back to Killer X YT"
                 android:textColor="@color/text_primary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
