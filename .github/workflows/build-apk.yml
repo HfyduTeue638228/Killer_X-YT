@@ -67,7 +67,7 @@ jobs:
           retention-days: 30
 
       - name: Publish Public GitHub Release (For In-App Auto-Updater)
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Killer X YT ${{ steps.version.outputs.tag }}
