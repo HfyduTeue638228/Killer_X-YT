@@ -11,12 +11,9 @@ let portVerified = false;
 let lastPongTime = 0;
 
 const contentPorts = new Set();
-const ourFetchedUrls = new Set();
-const recentTimedText = new Map();
 const translateCache = new Map();
-let latestTimedTextUrl = "";
-let latestVideoId = "";
-let latestDirectCues = [];
+const inflightTranslates = new Map();
+const MAX_CACHE_SIZE = 3000;
 
 function applyConfig(msg) {
   if (!msg || typeof msg !== "object") return;
@@ -69,7 +66,6 @@ function connectNative() {
       if (msg.type === "config") {
         applyConfig(msg);
       } else if (msg.type === "resync") {
-        recentTimedText.clear();
         broadcastToContent({ type: "config", config });
         broadcastToContent({ type: "resync" });
       } else if (msg.type === "mediaControl" || msg.type === "setPip") {
@@ -136,107 +132,8 @@ setInterval(() => {
   }
 }, 2500);
 
-function extractVideoIdFromUrl(url) {
-  try {
-    return new URL(url).searchParams.get("v") || "";
-  } catch (e) {
-    return "";
-  }
-}
-
-function toYouTubeSinhalaUrl(url) {
-  if (/[?&]lang=si(&|$)/i.test(url)) return url;
-  if (/([?&])tlang=[^&]*/i.test(url)) {
-    return url.replace(/([?&])tlang=[^&]*/i, "$1tlang=si");
-  }
-  return url + (url.includes("?") ? "&" : "?") + "tlang=si";
-}
-
-function publishCapturedCues(videoId, cues) {
-  if (!Array.isArray(cues) || cues.length === 0) return;
-  latestVideoId = videoId || latestVideoId;
-  latestDirectCues = cues;
-  broadcastToContent({ type: "directSinhalaTrack", videoId: latestVideoId, cues });
-  sendToNative({ type: "trackLoaded", count: cues.length });
-}
-
-function fetchTimedTextBackup(siUrl, videoId) {
-  if (!siUrl || !siUrl.includes("/api/timedtext")) return;
-  ourFetchedUrls.add(siUrl);
-  setTimeout(() => ourFetchedUrls.delete(siUrl), 10000);
-
-  fetch(siUrl, { credentials: "include" })
-    .then((r) => (r.ok ? r.text() : ""))
-    .then((txt) => {
-      const cues = parseTimedText(txt);
-      if (cues.length > 0) {
-        publishCapturedCues(videoId || extractVideoIdFromUrl(siUrl), cues);
-      }
-    })
-    .catch(() => {});
-}
-
-browser.runtime.onConnect.addListener((port) => {
-  if (!port || port.name !== "yt-content") return;
-  contentPorts.add(port);
-
-  if (!nativePort || !portVerified) {
-    connectNative();
-  }
-
-  try {
-    port.postMessage({ type: "config", config });
-    if (latestDirectCues.length > 0) {
-      port.postMessage({ type: "directSinhalaTrack", videoId: latestVideoId, cues: latestDirectCues });
-    }
-  } catch (e) {}
-
-  port.onMessage.addListener((msg) => {
-    if (!msg || typeof msg !== "object") return;
-
-    if (msg.type === "clearTrack") {
-      if (!msg.videoId || msg.videoId !== latestVideoId) {
-        latestTimedTextUrl = "";
-        latestVideoId = "";
-        latestDirectCues = [];
-        recentTimedText.clear();
-      }
-      return;
-    }
-
-    if (msg.type === "translateSingle") {
-      if (config.ytPackageMode) {
-        try {
-          port.postMessage({ type: "translateResult", reqId: msg.reqId, translated: "" });
-        } catch (e) {}
-        return;
-      }
-      translateFallback(msg.text).then((translated) => {
-        try {
-          port.postMessage({ type: "translateResult", reqId: msg.reqId, translated });
-        } catch (e) {}
-      });
-      return;
-    }
-
-    if (
-      msg.type === "showSubtitle" ||
-      msg.type === "hideSubtitle" ||
-      msg.type === "mediaState" ||
-      msg.type === "adBlocked" ||
-      msg.type === "trackLoaded"
-    ) {
-      sendToNative(msg);
-    }
-  });
-
-  port.onDisconnect.addListener(() => {
-    contentPorts.delete(port);
-  });
-});
-
 // =========================================================================
-// 1. REAL FIREFOX NETWORK AD BLOCKER (Never touches /api/timedtext!)
+// 1. REAL FIREFOX NETWORK AD BLOCKER (Never touches YouTube captions or translators!)
 // =========================================================================
 const AD_HOSTS = new Set([
   "doubleclick.net",
@@ -274,7 +171,9 @@ const NEVER_BLOCK_HOSTS = [
   "ytimg.com",
   "ggpht.com",
   "googleusercontent.com",
-  "translate.googleapis.com"
+  "translate.googleapis.com",
+  "clients5.google.com",
+  "api.mymemory.translated.net"
 ];
 
 const AD_PATH_RE = /(\/pagead\/|\/api\/stats\/ads|\/ptracking\?|\/youtubei\/v1\/log_event|\/adserver\/|\/ads\/vast|\/vast\.xml)/i;
@@ -299,7 +198,6 @@ browser.webRequest.onBeforeRequest.addListener(
     if (details.type === "main_frame") return {};
     const url = details.url || "";
     if (!url.startsWith("http")) return {};
-    // NEVER touch or redirect YouTube's own /api/timedtext requests!
     if (url.includes("/api/timedtext")) return {};
 
     try {
@@ -318,136 +216,131 @@ browser.webRequest.onBeforeRequest.addListener(
 );
 
 // =========================================================================
-// 2. PASSIVE POT-SIGNED TIMEDTEXT SNIFFER (Optional 0ms Sync Backup)
+// 2. ULTRA-FAST UNIVERSAL SINHALA TRANSLATOR (ANY LANGUAGE -> SINHALA)
 // =========================================================================
-function cleanCue(text) {
-  return (text || "")
-    .replace(/\{[^}]*\}/g, "")
-    .replace(/<[^>]*>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\\N|\\n/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function parseTimestamp(str) {
-  if (!str) return NaN;
-  const s = str.trim().replace(",", ".");
-  if (/^\d+(\.\d+)?s$/i.test(s)) return parseFloat(s);
-  if (/^\d+(\.\d+)?ms$/i.test(s)) return parseFloat(s) / 1000;
-  const parts = s.split(":").map((p) => parseFloat(p));
-  if (parts.some((n) => Number.isNaN(n))) return NaN;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return NaN;
-}
-
-function parseTimedText(rawText) {
-  const cues = [];
-  if (!rawText || rawText.length < 12) return cues;
-  const trimmed = rawText.replace(/^\uFEFF/, "").trim();
-
-  if (trimmed.startsWith("{")) {
-    try {
-      const json = JSON.parse(trimmed);
-      if (Array.isArray(json.events)) {
-        for (const ev of json.events) {
-          if (!Array.isArray(ev.segs)) continue;
-          const text = cleanCue(ev.segs.map((s) => s.utf8 || "").join(""));
-          if (!text) continue;
-          const start = (ev.tStartMs || 0) / 1000;
-          const dur = (ev.dDurationMs || 3500) / 1000;
-          cues.push({ start, end: start + Math.max(0.8, dur), text });
-        }
-        return cues;
-      }
-    } catch (e) {}
+function putCache(key, val) {
+  if (!key || !val) return;
+  if (translateCache.size >= MAX_CACHE_SIZE) {
+    const oldest = translateCache.keys().next().value;
+    if (oldest !== undefined) translateCache.delete(oldest);
   }
-
-  if (trimmed.startsWith("<")) {
-    try {
-      const doc = new DOMParser().parseFromString(trimmed, "text/xml");
-      doc.querySelectorAll("p, text").forEach((node) => {
-        const text = cleanCue(node.textContent || "");
-        if (!text) return;
-        let start = NaN;
-        let end = NaN;
-        const startA = node.getAttribute("start");
-        const durA = node.getAttribute("dur");
-        const tA = node.getAttribute("t");
-        const dA = node.getAttribute("d");
-        const beginA = node.getAttribute("begin");
-        const endA = node.getAttribute("end");
-        if (beginA) {
-          start = parseTimestamp(beginA);
-          end = endA ? parseTimestamp(endA) : durA ? start + parseTimestamp(durA) : start + 3.5;
-        } else if (startA) {
-          start = parseFloat(startA);
-          end = durA ? start + parseFloat(durA) : start + 3.5;
-        } else if (tA) {
-          start = parseFloat(tA) / 1000;
-          end = dA ? start + parseFloat(dA) / 1000 : start + 3.5;
-        }
-        if (Number.isFinite(start)) {
-          cues.push({ start, end: Number.isFinite(end) && end > start ? end : start + 3.5, text });
-        }
-      });
-    } catch (e) {}
-  }
-
-  return cues;
+  translateCache.set(key, val);
 }
 
-browser.webRequest.onCompleted.addListener(
-  (details) => {
-    if (!config.ccEnabled) return;
-    const url = details.url || "";
-    if (!url.includes("/api/timedtext")) return;
-    if (ourFetchedUrls.has(url)) return;
+async function translateGoogleGtx(text) {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=si&dt=t&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url);
+  if (!res.ok) return "";
+  const data = await res.json();
+  if (Array.isArray(data) && Array.isArray(data[0])) {
+    return data[0].map((item) => (Array.isArray(item) ? item[0] : "")).filter(Boolean).join("").trim();
+  }
+  return "";
+}
 
-    const siUrl = toYouTubeSinhalaUrl(url);
-    const vid = extractVideoIdFromUrl(siUrl);
-    if (vid && vid === latestVideoId && latestDirectCues.length > 0) return;
+async function translateGoogleClients5(text) {
+  const url = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=si&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url);
+  if (!res.ok) return "";
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    if (typeof data[0] === "string") return data[0].trim();
+    if (Array.isArray(data[0]) && typeof data[0][0] === "string") return data[0][0].trim();
+  }
+  return "";
+}
 
-    const now = Date.now();
-    const prev = recentTimedText.get(siUrl);
-    if (prev && now - prev < 5000) return;
-    recentTimedText.set(siUrl, now);
-    if (recentTimedText.size > 60) recentTimedText.clear();
+async function translateMyMemory(text) {
+  // MyMemory works best for English/Latin source lines as a tertiary fallback
+  const latinCount = (text.match(/[a-zA-Z]/g) || []).length;
+  if (latinCount < text.length * 0.4) return "";
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|si`;
+  const res = await fetch(url);
+  if (!res.ok) return "";
+  const data = await res.json();
+  const out = data && data.responseData && data.responseData.translatedText;
+  if (typeof out === "string" && out.trim() && !out.toUpperCase().includes("MYMEMORY WARNING")) {
+    return out.trim();
+  }
+  return "";
+}
 
-    latestTimedTextUrl = siUrl;
-    latestVideoId = vid;
-    fetchTimedTextBackup(siUrl, vid);
-  },
-  { urls: ["*://*.youtube.com/api/timedtext*"] }
-);
+function translateToSinhala(rawText) {
+  const clean = (rawText || "").replace(/\s+/g, " ").trim();
+  if (!clean) return Promise.resolve("");
+  if (/[\u0D80-\u0DFF]/.test(clean)) return Promise.resolve(clean);
+  if (translateCache.has(clean)) return Promise.resolve(translateCache.get(clean));
+  if (inflightTranslates.has(clean)) return inflightTranslates.get(clean);
 
-// =========================================================================
-// 3. FALLBACK TRANSLATOR (When YT Package Mode is OFF)
-// =========================================================================
-async function translateFallback(text) {
-  const clean = (text || "").replace(/\s+/g, " ").trim();
-  if (!clean) return "";
-  if (translateCache.has(clean)) return translateCache.get(clean);
-  try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=si&dt=t&q=${encodeURIComponent(clean)}`;
-    const res = await fetch(url);
-    if (!res.ok) return "";
-    const data = await res.json();
-    const si = Array.isArray(data) && Array.isArray(data[0])
-      ? data[0].map((item) => item[0]).filter(Boolean).join("").trim()
-      : "";
-    if (si) {
-      if (translateCache.size > 1500) translateCache.delete(translateCache.keys().next().value);
-      translateCache.set(clean, si);
+  const promise = (async () => {
+    let result = "";
+    try {
+      result = await translateGoogleGtx(clean);
+    } catch (e) {}
+
+    if (!result) {
+      try {
+        result = await translateGoogleClients5(clean);
+      } catch (e) {}
     }
-    return si;
-  } catch (e) {
-    return "";
-  }
+
+    if (!result) {
+      try {
+        result = await translateMyMemory(clean);
+      } catch (e) {}
+    }
+
+    if (result) {
+      putCache(clean, result);
+    }
+    return result;
+  })().finally(() => {
+    inflightTranslates.delete(clean);
+  });
+
+  inflightTranslates.set(clean, promise);
+  return promise;
 }
+
+// =========================================================================
+// 3. CONTENT SCRIPT <-> NATIVE BRIDGE
+// =========================================================================
+browser.runtime.onConnect.addListener((port) => {
+  if (!port || port.name !== "yt-content") return;
+  contentPorts.add(port);
+
+  if (!nativePort || !portVerified) {
+    connectNative();
+  }
+
+  try {
+    port.postMessage({ type: "config", config });
+  } catch (e) {}
+
+  port.onMessage.addListener((msg) => {
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "translateSingle") {
+      translateToSinhala(msg.text).then((translated) => {
+        try {
+          port.postMessage({ type: "translateResult", reqId: msg.reqId, text: msg.text, translated });
+        } catch (e) {}
+      });
+      return;
+    }
+
+    if (
+      msg.type === "showSubtitle" ||
+      msg.type === "hideSubtitle" ||
+      msg.type === "mediaState" ||
+      msg.type === "adBlocked" ||
+      msg.type === "trackLoaded"
+    ) {
+      sendToNative(msg);
+    }
+  });
+
+  port.onDisconnect.addListener(() => {
+    contentPorts.delete(port);
+  });
+});

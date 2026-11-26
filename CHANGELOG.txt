@@ -1,4 +1,4 @@
 Killer X YT v2.6 Update:
-- Fixed YouTube Package Mode hiding captions and failing Sinhala CC!
-- Removed breaking /api/timedtext network redirect; now uses YouTube player's own native Auto-Translate to Sinhala API (100% valid PO tokens, 0 KB Anytime Data!)
-- YouTube captions are never hidden unless Killer X YT Sinhala overlay is actively displaying
+- Live YouTube Subtitle Translator: YouTube plays in whatever subtitle language you choose (auto-generated or manual) and Killer X YT translates every line into Sinhala CC in real time!
+- No longer forces YouTube's broken auto-translate Sinhala track or blocks translation in Package Mode
+- Instant MutationObserver capture + rolling auto-caption anti-flicker + 3-tier translator fallback
