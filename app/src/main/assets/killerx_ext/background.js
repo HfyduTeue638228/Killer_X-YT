@@ -144,10 +144,6 @@ function extractVideoIdFromUrl(url) {
   }
 }
 
-function isSinhalaTimedTextUrl(url) {
-  return /[?&](tlang|lang)=si(&|$)/i.test(url || "");
-}
-
 function toYouTubeSinhalaUrl(url) {
   if (/[?&]lang=si(&|$)/i.test(url)) return url;
   if (/([?&])tlang=[^&]*/i.test(url)) {
@@ -164,7 +160,7 @@ function publishCapturedCues(videoId, cues) {
   sendToNative({ type: "trackLoaded", count: cues.length });
 }
 
-function fetchTimedTextCorsFree(siUrl, videoId) {
+function fetchTimedTextBackup(siUrl, videoId) {
   if (!siUrl || !siUrl.includes("/api/timedtext")) return;
   ourFetchedUrls.add(siUrl);
   setTimeout(() => ourFetchedUrls.delete(siUrl), 10000);
@@ -175,19 +171,6 @@ function fetchTimedTextCorsFree(siUrl, videoId) {
       const cues = parseTimedText(txt);
       if (cues.length > 0) {
         publishCapturedCues(videoId || extractVideoIdFromUrl(siUrl), cues);
-      } else if (!siUrl.includes("fmt=json3")) {
-        const jsonUrl = siUrl + "&fmt=json3";
-        ourFetchedUrls.add(jsonUrl);
-        setTimeout(() => ourFetchedUrls.delete(jsonUrl), 10000);
-        fetch(jsonUrl, { credentials: "include" })
-          .then((r2) => (r2.ok ? r2.text() : ""))
-          .then((txt2) => {
-            const cues2 = parseTimedText(txt2);
-            if (cues2.length > 0) {
-              publishCapturedCues(videoId || extractVideoIdFromUrl(siUrl), cues2);
-            }
-          })
-          .catch(() => {});
       }
     })
     .catch(() => {});
@@ -205,8 +188,6 @@ browser.runtime.onConnect.addListener((port) => {
     port.postMessage({ type: "config", config });
     if (latestDirectCues.length > 0) {
       port.postMessage({ type: "directSinhalaTrack", videoId: latestVideoId, cues: latestDirectCues });
-    } else if (latestTimedTextUrl) {
-      port.postMessage({ type: "timedTextUrl", videoId: latestVideoId, url: latestTimedTextUrl });
     }
   } catch (e) {}
 
@@ -220,12 +201,6 @@ browser.runtime.onConnect.addListener((port) => {
         latestDirectCues = [];
         recentTimedText.clear();
       }
-      return;
-    }
-
-    if (msg.type === "fetchTimedText" && msg.url) {
-      const siUrl = toYouTubeSinhalaUrl(msg.url);
-      fetchTimedTextCorsFree(siUrl, msg.videoId || extractVideoIdFromUrl(siUrl));
       return;
     }
 
@@ -261,7 +236,7 @@ browser.runtime.onConnect.addListener((port) => {
 });
 
 // =========================================================================
-// 1. REAL FIREFOX NETWORK AD BLOCKER + NATIVE YOUTUBE TIMEDTEXT REDIRECT!
+// 1. REAL FIREFOX NETWORK AD BLOCKER (Never touches /api/timedtext!)
 // =========================================================================
 const AD_HOSTS = new Set([
   "doubleclick.net",
@@ -318,74 +293,14 @@ function isAdHost(hostname) {
   return false;
 }
 
-// Passively tap the exact bytes of a Sinhala /api/timedtext response (ZERO extra network requests!)
-function attachSinhalaResponseTap(requestId, videoId) {
-  try {
-    if (typeof browser.webRequest.filterResponseData !== "function") return;
-    const filter = browser.webRequest.filterResponseData(requestId);
-    const decoder = new TextDecoder("utf-8");
-    let rawBody = "";
-
-    filter.ondata = (event) => {
-      try {
-        rawBody += decoder.decode(event.data, { stream: true });
-      } catch (e) {}
-      filter.write(event.data);
-    };
-
-    filter.onstop = () => {
-      try {
-        rawBody += decoder.decode();
-        const cues = parseTimedText(rawBody);
-        if (cues.length > 0) {
-          publishCapturedCues(videoId, cues);
-        }
-      } catch (e) {}
-      try {
-        filter.close();
-      } catch (e) {}
-    };
-
-    filter.onerror = () => {
-      try {
-        filter.disconnect();
-      } catch (e) {}
-    };
-  } catch (e) {}
-}
-
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
-    const url = details.url || "";
-    if (!url.startsWith("http")) return {};
-
-    // [A] YouTube /api/timedtext handler (0 KB Anytime Data + 100% POT Token Compatible!)
-    if (url.includes("/api/timedtext")) {
-      if (!config.ccEnabled) return {};
-      const vid = extractVideoIdFromUrl(url);
-
-      // If already a Sinhala timedtext request, passively tap its response stream!
-      if (isSinhalaTimedTextUrl(url)) {
-        if (!ourFetchedUrls.has(url)) {
-          attachSinhalaResponseTap(details.requestId, vid);
-        }
-        return {};
-      }
-
-      // In YouTube Package Mode (when Dual Subtitles is OFF), redirect YouTube's OWN pot-signed
-      // request directly to &tlang=si! Keeps pot, signature, cookies & all YouTube headers intact!
-      if (config.ytPackageMode && !config.dualSub && !ourFetchedUrls.has(url)) {
-        const siUrl = toYouTubeSinhalaUrl(url);
-        if (siUrl !== url) {
-          return { redirectUrl: siUrl };
-        }
-      }
-      return {};
-    }
-
-    // [B] Ad Blocker
     if (!config.adShield) return {};
     if (details.type === "main_frame") return {};
+    const url = details.url || "";
+    if (!url.startsWith("http")) return {};
+    // NEVER touch or redirect YouTube's own /api/timedtext requests!
+    if (url.includes("/api/timedtext")) return {};
 
     try {
       const parsed = new URL(url);
@@ -403,7 +318,7 @@ browser.webRequest.onBeforeRequest.addListener(
 );
 
 // =========================================================================
-// 2. NATIVE YOUTUBE SINHALA CC PARSER & BACKUP SNIFFER
+// 2. PASSIVE POT-SIGNED TIMEDTEXT SNIFFER (Optional 0ms Sync Backup)
 // =========================================================================
 function cleanCue(text) {
   return (text || "")
@@ -497,8 +412,6 @@ browser.webRequest.onCompleted.addListener(
 
     const siUrl = toYouTubeSinhalaUrl(url);
     const vid = extractVideoIdFromUrl(siUrl);
-
-    // If filterResponseData already captured cues for this video, skip duplicate fetch
     if (vid && vid === latestVideoId && latestDirectCues.length > 0) return;
 
     const now = Date.now();
@@ -509,9 +422,7 @@ browser.webRequest.onCompleted.addListener(
 
     latestTimedTextUrl = siUrl;
     latestVideoId = vid;
-
-    broadcastToContent({ type: "timedTextUrl", videoId: vid, url: siUrl });
-    fetchTimedTextCorsFree(siUrl, vid);
+    fetchTimedTextBackup(siUrl, vid);
   },
   { urls: ["*://*.youtube.com/api/timedtext*"] }
 );

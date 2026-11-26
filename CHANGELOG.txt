@@ -1,5 +1,4 @@
-Killer X YT v2.5 Update:
-- Fixed YouTube Package Mode (0 KB Anytime Data) Sinhala CC not working!
-- Fixed Firefox Xray fetch security error in content script
-- Added native webRequest &tlang=si redirect + live response stream capture (100% compatible with YouTube POT tokens)
-- Auto-hides duplicate native YouTube captions when Dual Subtitles is OFF
+Killer X YT v2.6 Update:
+- Fixed YouTube Package Mode hiding captions and failing Sinhala CC!
+- Removed breaking /api/timedtext network redirect; now uses YouTube player's own native Auto-Translate to Sinhala API (100% valid PO tokens, 0 KB Anytime Data!)
+- YouTube captions are never hidden unless Killer X YT Sinhala overlay is actively displaying
