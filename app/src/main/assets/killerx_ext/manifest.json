@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Killer X YT Built-In Engine",
-  "version": "2.7.1",
+  "version": "2.8",
   "description": "Ad-Free YouTube + 0ms Sinhala CC (YT Package Mode) + Background Play + PiP for Killer X YT.",
   "browser_specific_settings": {
     "gecko": {

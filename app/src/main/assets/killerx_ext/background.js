@@ -14,7 +14,11 @@ let lastPongTime = 0;
 const contentPorts = new Set();
 const translateCache = new Map();
 const inflightTranslates = new Map();
+const providerCooldownUntil = new Map();
 const MAX_CACHE_SIZE = 3000;
+
+let edgeAuthToken = "";
+let edgeAuthExpiresAt = 0;
 
 function applyConfig(msg) {
   if (!msg || typeof msg !== "object") return;
@@ -175,6 +179,8 @@ const NEVER_BLOCK_HOSTS = [
   "googleusercontent.com",
   "translate.googleapis.com",
   "clients5.google.com",
+  "edge.microsoft.com",
+  "api-edge.cognitive.microsofttranslator.com",
   "api.mymemory.translated.net"
 ];
 
@@ -218,7 +224,7 @@ browser.webRequest.onBeforeRequest.addListener(
 );
 
 // =========================================================================
-// 2. ULTRA-FAST UNIVERSAL SINHALA TRANSLATOR (ANY LANGUAGE -> SINHALA)
+// 2. FAST UNIVERSAL SINHALA TRANSLATOR (Google GTX + Clients5 + Edge AI VPN-Safe + MyMemory)
 // =========================================================================
 function putCache(key, val) {
   if (!key || !val) return;
@@ -229,9 +235,31 @@ function putCache(key, val) {
   translateCache.set(key, val);
 }
 
+function isOnCooldown(name) {
+  return Date.now() < (providerCooldownUntil.get(name) || 0);
+}
+
+function markCooldown(name, secs) {
+  providerCooldownUntil.set(name, Date.now() + secs * 1000);
+}
+
+async function fetchTimed(url, opts = {}, ms = 5500) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort("timeout"), ms);
+  try {
+    return await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function translateGoogleGtx(text) {
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=si&dt=t&q=${encodeURIComponent(text)}`;
-  const res = await fetch(url);
+  const res = await fetchTimed(url, {}, 5000);
+  if (res.status === 429 || res.status === 403) {
+    markCooldown("gtx", 90);
+    return "";
+  }
   if (!res.ok) return "";
   const data = await res.json();
   if (Array.isArray(data) && Array.isArray(data[0])) {
@@ -242,7 +270,11 @@ async function translateGoogleGtx(text) {
 
 async function translateGoogleClients5(text) {
   const url = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=si&q=${encodeURIComponent(text)}`;
-  const res = await fetch(url);
+  const res = await fetchTimed(url, {}, 5000);
+  if (res.status === 429 || res.status === 403) {
+    markCooldown("c5", 90);
+    return "";
+  }
   if (!res.ok) return "";
   const data = await res.json();
   if (Array.isArray(data)) {
@@ -252,12 +284,58 @@ async function translateGoogleClients5(text) {
   return "";
 }
 
+async function getEdgeToken() {
+  const now = Date.now();
+  if (edgeAuthToken && now < edgeAuthExpiresAt - 30000) return edgeAuthToken;
+  const res = await fetchTimed("https://edge.microsoft.com/translate/auth", { cache: "no-store" }, 5500);
+  if (!res.ok) return "";
+  const tok = (await res.text()).trim();
+  if (tok && tok.split(".").length >= 2) {
+    edgeAuthToken = tok;
+    edgeAuthExpiresAt = now + 8 * 60 * 1000;
+    return tok;
+  }
+  return "";
+}
+
+async function translateEdgeAi(text) {
+  const tok = await getEdgeToken();
+  if (!tok) return "";
+  const res = await fetchTimed(
+    "https://api-edge.cognitive.microsofttranslator.com/translate?to=si&api-version=3.0",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + tok,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify([{ Text: text }])
+    },
+    6000
+  );
+  if (res.status === 401) {
+    edgeAuthToken = "";
+    edgeAuthExpiresAt = 0;
+  }
+  if (res.status === 429 || res.status === 403) {
+    markCooldown("edge", 90);
+    return "";
+  }
+  if (!res.ok) return "";
+  const data = await res.json();
+  const out = Array.isArray(data) && data[0] && Array.isArray(data[0].translations) && data[0].translations[0] && data[0].translations[0].text;
+  return (out || "").trim();
+}
+
 async function translateMyMemory(text) {
-  // MyMemory works best for English/Latin source lines as a tertiary fallback
   const latinCount = (text.match(/[a-zA-Z]/g) || []).length;
   if (latinCount < text.length * 0.4) return "";
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|si`;
-  const res = await fetch(url);
+  const res = await fetchTimed(url, {}, 5000);
+  if (res.status === 429) {
+    markCooldown("mm", 90);
+    return "";
+  }
   if (!res.ok) return "";
   const data = await res.json();
   const out = data && data.responseData && data.responseData.translatedText;
@@ -275,26 +353,23 @@ function translateToSinhala(rawText) {
   if (inflightTranslates.has(clean)) return inflightTranslates.get(clean);
 
   const promise = (async () => {
+    const chain = [
+      ["gtx", translateGoogleGtx],
+      ["c5", translateGoogleClients5],
+      ["edge", translateEdgeAi],
+      ["mm", translateMyMemory]
+    ];
+
     let result = "";
-    try {
-      result = await translateGoogleGtx(clean);
-    } catch (e) {}
-
-    if (!result) {
+    for (const [id, fn] of chain) {
+      if (isOnCooldown(id)) continue;
       try {
-        result = await translateGoogleClients5(clean);
+        result = await fn(clean);
+        if (result) break;
       } catch (e) {}
     }
 
-    if (!result) {
-      try {
-        result = await translateMyMemory(clean);
-      } catch (e) {}
-    }
-
-    if (result) {
-      putCache(clean, result);
-    }
+    if (result) putCache(clean, result);
     return result;
   })().finally(() => {
     inflightTranslates.delete(clean);

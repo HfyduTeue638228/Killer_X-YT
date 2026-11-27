@@ -1,5 +1,6 @@
-Killer X YT v2.7.1 Update:
-- Official App-Style Dark UI with custom Killer X YT branding
-- Fixed CC, PiP & Sleep Timer buttons next to the Search icon
-- New Sleep Timer (15, 30, 60, 120 minutes) — auto-closes the app when time is up
-- Improved Live Sinhala CC translator for all subtitle languages
+Killer X YT v2.8 Update:
+- Auto-Start YouTube & Sinhala CC: No longer need to manually turn YouTube CC OFF and ON for subtitles to appear!
+- Tap "Killer X YT" logo at top-left to jump straight to YouTube Home
+- Compact YouTube subtitles: Made native YouTube captions smaller than Sinhala CC
+- New Subtitle Box Darkness slider (0% - 100%) in CC Settings to adjust or hide the black box behind Sinhala text
+- Added VPN-safe Edge AI translator fallback (prevents HTTP 429 on VPNs)

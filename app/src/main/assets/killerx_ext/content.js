@@ -48,8 +48,15 @@
   connectBg();
 
   ["touchstart", "pointerdown", "mousedown"].forEach((ev) => {
-    window.addEventListener(ev, () => {
+    window.addEventListener(ev, (e) => {
       lastUserPointerTime = Date.now();
+      try {
+        const tgt = e.target && e.target.closest && e.target.closest(".ytp-subtitles-button, button.ytm-closed-captioning-button");
+        if (tgt) {
+          const vid = getCurrentVideoId();
+          if (vid) userManuallyToggledCcVids.add(vid);
+        }
+      } catch (err) {}
     }, true);
   });
 
@@ -157,6 +164,22 @@
       top: 0 !important;
       z-index: 4 !important;
       background: #000 !important;
+    }
+
+    /* Make YouTube's built-in subtitles noticeably smaller than Sinhala CC */
+    .ytp-caption-segment,
+    .captions-text .ytp-caption-segment {
+      font-size: 11px !important;
+      line-height: 1.22 !important;
+      padding: 1px 4px !important;
+    }
+    .html5-video-player.ytp-fullscreen .ytp-caption-segment,
+    :fullscreen .ytp-caption-segment {
+      font-size: 13px !important;
+      line-height: 1.25 !important;
+    }
+    .ytp-caption-window-container .caption-window {
+      margin-bottom: 6px !important;
     }
 
     /* Hide YouTube's original wordmark SVGs once Killer X YT brand is attached */
@@ -383,6 +406,13 @@
     badge.appendChild(iconBox);
     badge.appendChild(labelMain);
     badge.appendChild(labelYt);
+
+    badge.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      postBg({ type: "uiAction", action: "goHome" });
+    }, true);
+
     return badge;
   }
 
@@ -402,6 +432,14 @@
 
       if (logoHost) {
         logoHost.classList.add("kx-brand-host");
+        if (!logoHost.dataset.kxHomeBound) {
+          logoHost.dataset.kxHomeBound = "1";
+          logoHost.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            postBg({ type: "uiAction", action: "goHome" });
+          }, true);
+        }
         if (!logoHost.querySelector("#kx-brand-badge")) {
           logoHost.appendChild(createKillerXBrandBadge());
         }
@@ -805,6 +843,11 @@
   let translatedLineCount = 0;
   let observedCaptionRoot = null;
   let captionObserver = null;
+  const ccEnableTriedVids = new Set();
+  const ccCycleTriedVids = new Set();
+  const userManuallyToggledCcVids = new Set();
+  let ccWatchStartMs = 0;
+  let ccRenderedForCurrentVid = false;
 
   function cachePut(orig, si) {
     if (!orig || !si) return;
@@ -887,6 +930,7 @@
       return;
     }
 
+    ccRenderedForCurrentVid = true;
     lastNonEmptyCaptionMs = now;
     if (clean === lastSeenRawText) return;
     lastSeenRawText = clean;
@@ -933,6 +977,95 @@
     } catch (e) {}
   }
 
+  // Auto-kickstart YouTube's CC module on new videos so BOTH YouTube CC & Sinhala CC work immediately
+  // without the user manually turning CC OFF and back ON!
+  function kickstartYouTubeCaptions() {
+    if (!config.ccEnabled) return;
+    const vid = getCurrentVideoId();
+    if (!vid) return;
+    if (ccRenderedForCurrentVid || userManuallyToggledCcVids.has(vid)) return;
+    if (readVisibleYouTubeCaption()) {
+      ccRenderedForCurrentVid = true;
+      return;
+    }
+
+    const v = getMainVideo();
+    if (!v || v.paused || v.ended || v.readyState < 2 || v.currentTime < 0.35) return;
+
+    // Ignore ads while an ad is playing
+    const playerEl = document.querySelector(".html5-video-player");
+    if (playerEl && (playerEl.classList.contains("ad-showing") || playerEl.classList.contains("ad-interrupting"))) {
+      return;
+    }
+
+    const now = Date.now();
+    if (ccWatchStartMs === 0) ccWatchStartMs = now;
+    const elapsed = now - ccWatchStartMs;
+
+    const ccBtn = document.querySelector(".ytp-subtitles-button, button.ytm-closed-captioning-button");
+    const player = playerEl ? (playerEl.wrappedJSObject || playerEl) : null;
+
+    // Step 1 (~450ms): Wake YouTube captions module & turn CC ON if it is currently OFF
+    if (!ccEnableTriedVids.has(vid) && elapsed >= 450) {
+      ccEnableTriedVids.add(vid);
+      try {
+        if (player && typeof player.loadModule === "function") {
+          player.loadModule("captions");
+        }
+        if (player && typeof player.toggleSubtitlesOn === "function") {
+          player.toggleSubtitlesOn();
+        }
+      } catch (e) {}
+
+      if (ccBtn && ccBtn.getAttribute("aria-pressed") === "false") {
+        try { ccBtn.click(); } catch (e) {}
+      }
+      ensureCaptionObserver();
+      return;
+    }
+
+    // Step 2 (~2.0s): If YouTube CC is stuck ON from previous video and still not rendering segments,
+    // automatically perform ONE clean OFF -> ON cycle!
+    if (!ccCycleTriedVids.has(vid) && elapsed >= 2000) {
+      ccCycleTriedVids.add(vid);
+      if (readVisibleYouTubeCaption()) {
+        ccRenderedForCurrentVid = true;
+        return;
+      }
+
+      if (ccBtn) {
+        const pressed = ccBtn.getAttribute("aria-pressed");
+        if (pressed === "true") {
+          try { ccBtn.click(); } catch (e) {}
+          setTimeout(() => {
+            if (getCurrentVideoId() === vid && !userManuallyToggledCcVids.has(vid)) {
+              const btn2 = document.querySelector(".ytp-subtitles-button, button.ytm-closed-captioning-button");
+              if (btn2 && btn2.getAttribute("aria-pressed") === "false") {
+                try { btn2.click(); } catch (e) {}
+              }
+              ensureCaptionObserver();
+            }
+          }, 220);
+        } else if (pressed === "false") {
+          try { ccBtn.click(); } catch (e) {}
+        }
+      } else if (player && typeof player.toggleSubtitles === "function") {
+        try {
+          player.toggleSubtitles();
+          setTimeout(() => {
+            if (getCurrentVideoId() === vid && !userManuallyToggledCcVids.has(vid)) {
+              try {
+                if (typeof player.toggleSubtitlesOn === "function") player.toggleSubtitlesOn();
+                else player.toggleSubtitles();
+              } catch (e) {}
+              ensureCaptionObserver();
+            }
+          }, 220);
+        } catch (e) {}
+      }
+    }
+  }
+
   function checkNavigation() {
     const vid = getCurrentVideoId();
     if (vid !== lastActiveVideoId) {
@@ -941,6 +1074,11 @@
       lastShownSi = "";
       lastNonEmptyCaptionMs = 0;
       translatedLineCount = 0;
+      ccWatchStartMs = 0;
+      ccRenderedForCurrentVid = false;
+      ccEnableTriedVids.delete(vid);
+      ccCycleTriedVids.delete(vid);
+      userManuallyToggledCcVids.delete(vid);
       userPaused = false;
       if (debounceTimer) {
         clearTimeout(debounceTimer);
@@ -1008,5 +1146,6 @@
   setInterval(attachAntiAutoPauseGuard, 500);
   setInterval(skipYouTubeAds, 250);
   setInterval(reportMediaState, 500);
+  setInterval(kickstartYouTubeCaptions, 450);
   setInterval(scanYouTubeCaptions, 100);
 })();

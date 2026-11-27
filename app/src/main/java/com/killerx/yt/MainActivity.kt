@@ -13,6 +13,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
@@ -77,6 +78,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
     private var dualSub = false
     private var adShield = true
     private var fontSizeSp = 18
+    private var subBgOpacity = 85
     private var subPosition = "bottom"
     private var subColorHex = "#FFFFFF"
     private var lastSelectedSleepMins = 30
@@ -300,6 +302,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
                     "openSettings" -> mainHandler.post { showSettingsDialog() }
                     "openSleepTimer" -> mainHandler.post { showSleepTimerDialog() }
                     "enterPip" -> mainHandler.post { enterPipModeNow() }
+                    "goHome" -> mainHandler.post { geckoSession.loadUri(YOUTUBE_HOME) }
                 }
             }
         }
@@ -713,6 +716,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         dualSub = prefs.getBoolean("dualSub", false)
         adShield = prefs.getBoolean("adShield", true)
         fontSizeSp = prefs.getInt("fontSizeSp", 18)
+        subBgOpacity = prefs.getInt("subBgOpacity", 85).coerceIn(0, 100)
         subPosition = prefs.getString("subPosition", "bottom") ?: "bottom"
         subColorHex = prefs.getString("subColorHex", "#FFFFFF") ?: "#FFFFFF"
         lastSelectedSleepMins = prefs.getInt("lastSelectedSleepMins", 30)
@@ -727,6 +731,7 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             .putBoolean("dualSub", dualSub)
             .putBoolean("adShield", adShield)
             .putInt("fontSizeSp", fontSizeSp)
+            .putInt("subBgOpacity", subBgOpacity)
             .putString("subPosition", subPosition)
             .putString("subColorHex", subColorHex)
             .putInt("lastSelectedSleepMins", lastSelectedSleepMins)
@@ -743,8 +748,28 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             tvSinhalaSub.setTextColor(Color.WHITE)
         }
 
-        val lp = subtitleOverlayContainer.layoutParams as FrameLayout.LayoutParams
         val density = resources.displayMetrics.density
+        val clampedOpacity = subBgOpacity.coerceIn(0, 100)
+        val bgAlpha = (clampedOpacity * 255) / 100
+        val strokeAlpha = (clampedOpacity * 155) / 100
+        val bgDrawable = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 8f * density
+            setColor(Color.argb(bgAlpha, 0, 0, 0))
+            if (clampedOpacity > 0) {
+                setStroke((1f * density).toInt().coerceAtLeast(1), Color.argb(strokeAlpha, 229, 9, 20))
+            }
+        }
+        subtitleOverlayContainer.background = bgDrawable
+        val padH = (11 * density).toInt()
+        val padV = (4 * density).toInt()
+        subtitleOverlayContainer.setPadding(padH, padV, padH, padV)
+
+        // Stronger outline shadow when background box is transparent so letters remain crisp!
+        val shadowRad = if (clampedOpacity < 30) 7f else 4f
+        tvSinhalaSub.setShadowLayer(shadowRad, 1.5f, 1.5f, Color.BLACK)
+
+        val lp = subtitleOverlayContainer.layoutParams as FrameLayout.LayoutParams
         if (isInPip) {
             lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             lp.topMargin = 0
@@ -994,6 +1019,8 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
         val cbAdShield = view.findViewById<CheckBox>(R.id.cbAdShield)
         val tvSizeLabel = view.findViewById<TextView>(R.id.tvSizeLabel)
         val sbFontSize = view.findViewById<SeekBar>(R.id.sbFontSize)
+        val tvBgOpacityLabel = view.findViewById<TextView>(R.id.tvBgOpacityLabel)
+        val sbBgOpacity = view.findViewById<SeekBar>(R.id.sbBgOpacity)
         val rgPosition = view.findViewById<RadioGroup>(R.id.rgPosition)
         val rbPosBottom = view.findViewById<RadioButton>(R.id.rbPosBottom)
         val rbPosTop = view.findViewById<RadioButton>(R.id.rbPosTop)
@@ -1018,6 +1045,9 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
 
         sbFontSize.progress = (fontSizeSp - 12).coerceIn(0, 22)
         tvSizeLabel.text = "Subtitle Font Size: ${fontSizeSp}sp"
+
+        sbBgOpacity.progress = subBgOpacity.coerceIn(0, 100)
+        tvBgOpacityLabel.text = if (subBgOpacity == 0) "Subtitle Box Darkness: 0% (No Box)" else "Subtitle Box Darkness: ${subBgOpacity}%"
 
         if (subPosition == "top") rbPosTop.isChecked = true else rbPosBottom.isChecked = true
         when (subColorHex.uppercase()) {
@@ -1045,6 +1075,16 @@ class MainActivity : AppCompatActivity(), ExtensionBridge.Listener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 fontSizeSp = 12 + progress
                 tvSizeLabel.text = "Subtitle Font Size: ${fontSizeSp}sp"
+                applySubtitleStyle()
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        sbBgOpacity.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                subBgOpacity = progress.coerceIn(0, 100)
+                tvBgOpacityLabel.text = if (subBgOpacity == 0) "Subtitle Box Darkness: 0% (No Box)" else "Subtitle Box Darkness: ${subBgOpacity}%"
                 applySubtitleStyle()
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
