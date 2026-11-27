@@ -192,11 +192,19 @@
       display: inline-flex !important;
       align-items: center !important;
       gap: 6px !important;
-      padding: 2px 4px 2px 2px !important;
+      padding: 4px 6px 4px 2px !important;
       text-decoration: none !important;
       cursor: pointer !important;
+      pointer-events: auto !important;
+      position: relative !important;
+      z-index: 60 !important;
       flex-shrink: 0 !important;
       white-space: nowrap !important;
+      border-radius: 8px !important;
+    }
+    #kx-brand-badge:active {
+      opacity: 0.72 !important;
+      transform: scale(0.96) !important;
     }
     .kx-brand-icon {
       display: inline-flex !important;
@@ -345,6 +353,28 @@
     }
   `;
 
+  const SHRINK_YT_CC_CSS = `
+    /* Keep YouTube's built-in subtitle small & unobtrusive while Sinhala CC is active */
+    .ytp-caption-window-container {
+      pointer-events: none !important;
+    }
+    .ytp-caption-window-container .caption-window,
+    .caption-window.ytp-caption-window-bottom,
+    .caption-window.ytp-caption-window-top {
+      transform: scale(0.68) !important;
+      transform-origin: center bottom !important;
+      opacity: 0.55 !important;
+      margin-bottom: 0 !important;
+      padding: 0 !important;
+    }
+    .ytp-caption-segment {
+      font-size: 11px !important;
+      line-height: 1.15 !important;
+      padding: 1px 4px !important;
+      background-color: rgba(0, 0, 0, 0.45) !important;
+    }
+  `;
+
   // Pure DOM SVG factory — ZERO innerHTML, 100% immune to YouTube Trusted Types CSP!
   const SVG_NS = "http://www.w3.org/2000/svg";
   function makeSvgIcon(pathData) {
@@ -392,12 +422,66 @@
         style.textContent = AD_CSS;
         root.appendChild(style);
       }
+
+      const existingShrinkCc = document.getElementById("kx-shrink-yt-cc-css");
+      if (!config.ccEnabled) {
+        if (existingShrinkCc) existingShrinkCc.remove();
+      } else if (!existingShrinkCc) {
+        const style = document.createElement("style");
+        style.id = "kx-shrink-yt-cc-css";
+        style.textContent = SHRINK_YT_CC_CSS;
+        root.appendChild(style);
+      }
     } catch (e) {}
+  }
+
+  function goToYouTubeHome() {
+    try {
+      const isAlreadyHome = location.pathname === "/" && !location.search;
+      if (isAlreadyHome) {
+        if (window.scrollY > 40) {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          return;
+        }
+        // Already at top of Home: tap YouTube's Home pivot tab to refresh feed, else reload
+        const homePivot = document.querySelector(
+          "ytm-pivot-bar-item-renderer .pivot-w2w, ytm-pivot-bar-item-renderer[tab-identifier='FEwhat_to_watch'], ytm-pivot-bar-renderer ytm-pivot-bar-item-renderer:first-child"
+        );
+        if (homePivot) {
+          homePivot.click();
+          return;
+        }
+        window.location.assign("https://m.youtube.com/");
+        return;
+      }
+
+      // Not on Home (e.g. /watch, /results, /shorts, channel page):
+      // 1. Try instant SPA Home pivot tab if visible
+      const homeTab = document.querySelector(
+        "ytm-pivot-bar-item-renderer .pivot-w2w, ytm-pivot-bar-item-renderer[tab-identifier='FEwhat_to_watch'], ytm-pivot-bar-renderer ytm-pivot-bar-item-renderer:first-child"
+      );
+      if (homeTab && isElementVisibleOnScreen(homeTab)) {
+        homeTab.click();
+        setTimeout(() => {
+          if (location.pathname !== "/" || location.search) {
+            window.location.assign("https://m.youtube.com/");
+          }
+        }, 220);
+        return;
+      }
+
+      // 2. Direct reliable navigation straight to YouTube Home
+      window.location.assign("https://m.youtube.com/");
+    } catch (e) {
+      window.location.href = "https://m.youtube.com/";
+    }
   }
 
   function createKillerXBrandBadge() {
     const badge = document.createElement("div");
     badge.id = "kx-brand-badge";
+    badge.setAttribute("role", "button");
+    badge.setAttribute("aria-label", "Killer X YT Home");
 
     const iconBox = document.createElement("span");
     iconBox.className = "kx-brand-icon";
@@ -414,6 +498,13 @@
     badge.appendChild(iconBox);
     badge.appendChild(labelMain);
     badge.appendChild(labelYt);
+
+    badge.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      goToYouTubeHome();
+    }, true);
+
     return badge;
   }
 
@@ -713,6 +804,7 @@
     v.addEventListener("play", () => {
       userPaused = false;
       reportMediaState();
+      tryAutoCycleCcOnPlay();
     });
 
     v.addEventListener("pause", () => {
@@ -917,6 +1009,155 @@
     postBg({ type: "translateSingle", reqId: id, text: cleanText });
   }
 
+
+  // =========================================================================
+  // 5B. AUTO CC OFF -> ON ONCE WHEN VIDEO STARTS PLAYING
+  // =========================================================================
+  let ccCycledForVid = "";
+  let ccCyclingInProgressVid = "";
+
+  function findYouTubeCcButton() {
+    const sels = [
+      "button.ytm-closed-captioning-button",
+      "button.ytp-subtitles-button",
+      ".ytp-subtitles-button",
+      "button[aria-label*='Subtitles']",
+      "button[aria-label*='Captions']",
+      "button[aria-label*='captions']",
+      "button[aria-label*='subtitles']"
+    ];
+    for (let i = 0; i < sels.length; i++) {
+      const btn = document.querySelector(sels[i]);
+      if (btn && !btn.closest("#kx-header-controls") && !btn.closest("#kx-shorts-fallback")) {
+        return btn;
+      }
+    }
+    return null;
+  }
+
+  function getWrappedYtPlayer() {
+    const el = document.querySelector("#movie_player, .html5-video-player");
+    if (!el) return null;
+    return el.wrappedJSObject || el;
+  }
+
+  function isAdCurrentlyPlaying() {
+    const playerEl = document.querySelector(".html5-video-player");
+    return !!(
+      (playerEl && (playerEl.classList.contains("ad-showing") || playerEl.classList.contains("ad-interrupting"))) ||
+      document.querySelector(".ytp-ad-player-overlay, .ytp-ad-player-overlay-layout")
+    );
+  }
+
+  function isCcButtonOn(btn) {
+    if (!btn) return false;
+    const pressed = btn.getAttribute("aria-pressed");
+    if (pressed === "true") return true;
+    if (pressed === "false") return false;
+    const lbl = (btn.getAttribute("aria-label") || "").toLowerCase();
+    return lbl.includes("turn off") || lbl.includes("disable");
+  }
+
+  function setYouTubeCcOff(btn, player) {
+    try {
+      if (isCcButtonOn(btn)) {
+        btn.click();
+        return true;
+      }
+    } catch (e) {}
+    try {
+      if (player) {
+        if (typeof player.unloadModule === "function") {
+          player.unloadModule("captions");
+          return true;
+        }
+        if (typeof player.getOption === "function" && typeof player.toggleSubtitles === "function") {
+          const tr = player.getOption("captions", "track");
+          if (tr && tr.languageCode) {
+            player.toggleSubtitles();
+            return true;
+          }
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function setYouTubeCcOn(btn, player) {
+    let triggered = false;
+    try {
+      if (btn && !isCcButtonOn(btn)) {
+        btn.click();
+        triggered = true;
+      }
+    } catch (e) {}
+    try {
+      if (player) {
+        if (typeof player.loadModule === "function") {
+          player.loadModule("captions");
+        }
+        if (typeof player.toggleSubtitlesOn === "function") {
+          player.toggleSubtitlesOn();
+          triggered = true;
+        } else if (!triggered && typeof player.toggleSubtitles === "function") {
+          const tr = typeof player.getOption === "function" ? player.getOption("captions", "track") : null;
+          if (!tr || !tr.languageCode) {
+            player.toggleSubtitles();
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  function tryAutoCycleCcOnPlay() {
+    if (!config.ccEnabled) return;
+    const vid = getCurrentVideoId();
+    if (!vid) return;
+    if (ccCycledForVid === vid || ccCyclingInProgressVid === vid) return;
+    if (isAdCurrentlyPlaying()) return;
+
+    const v = getMainVideo();
+    if (!v || v.paused || v.ended || v.readyState < 2 || v.currentTime < 0.15) return;
+
+    ccCyclingInProgressVid = vid;
+
+    const btn1 = findYouTubeCcButton();
+    const player1 = getWrappedYtPlayer();
+
+    // Step 1: Turn YouTube CC OFF once right as video playback starts
+    setYouTubeCcOff(btn1, player1);
+
+    // Step 2: Turn YouTube CC back ON after 350ms
+    setTimeout(() => {
+      if (!config.ccEnabled || getCurrentVideoId() !== vid) {
+        if (ccCyclingInProgressVid === vid) ccCyclingInProgressVid = "";
+        return;
+      }
+      const btn2 = findYouTubeCcButton();
+      const player2 = getWrappedYtPlayer();
+      setYouTubeCcOn(btn2, player2);
+
+      // Step 3: Safety verify at +600ms to ensure CC stayed ON cleanly
+      setTimeout(() => {
+        if (ccCyclingInProgressVid === vid) ccCyclingInProgressVid = "";
+        if (getCurrentVideoId() !== vid) return;
+        ccCycledForVid = vid;
+        if (!config.ccEnabled) return;
+
+        const btn3 = findYouTubeCcButton();
+        const player3 = getWrappedYtPlayer();
+        if (btn3 && btn3.getAttribute("aria-pressed") === "false") {
+          try { btn3.click(); } catch (e) {}
+        } else if (player3 && typeof player3.toggleSubtitlesOn === "function") {
+          try {
+            const tr = typeof player3.getOption === "function" ? player3.getOption("captions", "track") : null;
+            if (!tr || !tr.languageCode) player3.toggleSubtitlesOn();
+          } catch (e) {}
+        }
+      }, 600);
+    }, 350);
+  }
+
   function scanYouTubeCaptions() {
     if (!config.ccEnabled) return;
 
@@ -982,6 +1223,8 @@
     const vid = getCurrentVideoId();
     if (vid !== lastActiveVideoId) {
       lastActiveVideoId = vid;
+      ccCycledForVid = "";
+      ccCyclingInProgressVid = "";
       lastSeenRawText = "";
       lastShownSi = "";
       lastNonEmptyCaptionMs = 0;
@@ -1058,5 +1301,6 @@
   setInterval(attachAntiAutoPauseGuard, 500);
   setInterval(skipYouTubeAds, 120);
   setInterval(reportMediaState, 500);
+  setInterval(tryAutoCycleCcOnPlay, 400);
   setInterval(scanYouTubeCaptions, 100);
 })();
