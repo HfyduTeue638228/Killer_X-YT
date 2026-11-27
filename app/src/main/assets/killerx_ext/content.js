@@ -183,6 +183,12 @@
     }
 
     /* Hide YouTube's original wordmark SVGs once Killer X YT brand is attached */
+    .kx-brand-host {
+      pointer-events: auto !important;
+      position: relative !important;
+      z-index: 60 !important;
+      cursor: pointer !important;
+    }
     .kx-brand-host > *:not(#kx-brand-badge) {
       display: none !important;
     }
@@ -190,11 +196,17 @@
       display: inline-flex !important;
       align-items: center !important;
       gap: 6px !important;
-      padding: 2px 4px 2px 2px !important;
+      padding: 4px 8px 4px 2px !important;
       text-decoration: none !important;
       cursor: pointer !important;
+      pointer-events: auto !important;
+      position: relative !important;
+      z-index: 65 !important;
       flex-shrink: 0 !important;
       white-space: nowrap !important;
+    }
+    #kx-brand-badge * {
+      pointer-events: none !important;
     }
     .kx-brand-icon {
       display: inline-flex !important;
@@ -387,9 +399,102 @@
     } catch (e) {}
   }
 
+  let lastHomeNavMs = 0;
+  function goToYouTubeHomeNow() {
+    const now = Date.now();
+    if (now - lastHomeNavMs < 500) return;
+    lastHomeNavMs = now;
+
+    const onHome = location.pathname === "/" && !location.search.includes("v=") && !location.search.includes("search_query=");
+    if (onHome && window.scrollY > 80) {
+      try {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (e) {
+        window.scrollTo(0, 0);
+      }
+      return;
+    }
+
+    const beforeHref = location.href;
+    try {
+      window.location.assign("https://m.youtube.com/");
+    } catch (e) {
+      postBg({ type: "uiAction", action: "goHome" });
+      return;
+    }
+
+    // Safety fallback via native MainActivity if SPA blocked same-origin assign
+    setTimeout(() => {
+      if (location.href === beforeHref && !onHome) {
+        postBg({ type: "uiAction", action: "goHome" });
+      }
+    }, 300);
+  }
+
+  // Document-level capture listener (works even if YouTube puts disabled button / overlay above the logo!)
+  let brandTouchStartX = 0;
+  let brandTouchStartY = 0;
+  let brandTouchHit = false;
+
+  function isPointOnBrandBadge(x, y) {
+    const badge = document.getElementById("kx-brand-badge");
+    if (!badge || !badge.isConnected) return false;
+    try {
+      const r = badge.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      return x >= r.left - 8 && x <= r.right + 8 && y >= r.top - 8 && y <= r.bottom + 8;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  document.addEventListener("touchstart", (e) => {
+    try {
+      const t = e.changedTouches && e.changedTouches[0];
+      if (!t) return;
+      brandTouchStartX = t.clientX;
+      brandTouchStartY = t.clientY;
+      brandTouchHit =
+        !!(e.target && e.target.closest && e.target.closest("#kx-brand-badge, .kx-brand-host")) ||
+        isPointOnBrandBadge(t.clientX, t.clientY);
+    } catch (err) {
+      brandTouchHit = false;
+    }
+  }, true);
+
+  document.addEventListener("touchend", (e) => {
+    if (!brandTouchHit) return;
+    brandTouchHit = false;
+    try {
+      const t = e.changedTouches && e.changedTouches[0];
+      if (!t) return;
+      const dx = Math.abs(t.clientX - brandTouchStartX);
+      const dy = Math.abs(t.clientY - brandTouchStartY);
+      if (dx < 18 && dy < 18) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        goToYouTubeHomeNow();
+      }
+    } catch (err) {}
+  }, true);
+
+  document.addEventListener("click", (e) => {
+    try {
+      const hitTarget = !!(e.target && e.target.closest && e.target.closest("#kx-brand-badge, .kx-brand-host"));
+      const hitRect = typeof e.clientX === "number" && isPointOnBrandBadge(e.clientX, e.clientY);
+      if (hitTarget || hitRect) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        goToYouTubeHomeNow();
+      }
+    } catch (err) {}
+  }, true);
+
   function createKillerXBrandBadge() {
     const badge = document.createElement("div");
     badge.id = "kx-brand-badge";
+    badge.setAttribute("role", "button");
+    badge.setAttribute("aria-label", "Killer X YT Home");
 
     const iconBox = document.createElement("span");
     iconBox.className = "kx-brand-icon";
@@ -406,13 +511,6 @@
     badge.appendChild(iconBox);
     badge.appendChild(labelMain);
     badge.appendChild(labelYt);
-
-    badge.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      postBg({ type: "uiAction", action: "goHome" });
-    }, true);
-
     return badge;
   }
 
@@ -427,18 +525,14 @@
 
       // Find YouTube's top-left home logo container
       const logoHost = header.querySelector(
-        "ytm-home-logo, #home-icon, button.mobile-topbar-header-endpoint, a.mobile-topbar-header-endpoint, [aria-label='YouTube Home'], [aria-label*='YouTube']"
+        "button.mobile-topbar-header-endpoint, a.mobile-topbar-header-endpoint, ytm-home-logo, #home-icon, [aria-label='YouTube Home'], [aria-label*='YouTube']"
       );
 
       if (logoHost) {
         logoHost.classList.add("kx-brand-host");
-        if (!logoHost.dataset.kxHomeBound) {
-          logoHost.dataset.kxHomeBound = "1";
-          logoHost.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            postBg({ type: "uiAction", action: "goHome" });
-          }, true);
+        if (logoHost.hasAttribute("disabled")) logoHost.removeAttribute("disabled");
+        if (logoHost.parentElement && logoHost.parentElement.hasAttribute("disabled")) {
+          logoHost.parentElement.removeAttribute("disabled");
         }
         if (!logoHost.querySelector("#kx-brand-badge")) {
           logoHost.appendChild(createKillerXBrandBadge());
