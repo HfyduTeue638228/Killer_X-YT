@@ -2,6 +2,24 @@
   if (window.__kxGeckoContentLoaded) return;
   window.__kxGeckoContentLoaded = true;
 
+  // Inject Brave-Grade MAIN-world JSON Pruner scriptlet immediately at document_start!
+  function injectBraveAdBlockScript() {
+    try {
+      if (document.documentElement && !document.documentElement.dataset.kxAdShield) {
+        document.documentElement.dataset.kxAdShield = "1";
+      }
+      if (document.getElementById("kx-brave-adblock-script")) return;
+      const root = document.head || document.documentElement;
+      if (!root) return;
+      const s = document.createElement("script");
+      s.id = "kx-brave-adblock-script";
+      s.src = browser.runtime.getURL("adblock_main.js");
+      s.async = false;
+      root.insertBefore(s, root.firstChild);
+    } catch (e) {}
+  }
+  injectBraveAdBlockScript();
+
   let config = {
     ccEnabled: true,
     ytPackageMode: true,
@@ -47,16 +65,16 @@
   }
   connectBg();
 
+  window.addEventListener("message", (event) => {
+    const d = event && event.data;
+    if (d && d.__kxAdPruned) {
+      postBg({ type: "adBlocked" });
+    }
+  });
+
   ["touchstart", "pointerdown", "mousedown"].forEach((ev) => {
-    window.addEventListener(ev, (e) => {
+    window.addEventListener(ev, () => {
       lastUserPointerTime = Date.now();
-      try {
-        const tgt = e.target && e.target.closest && e.target.closest(".ytp-subtitles-button, button.ytm-closed-captioning-button");
-        if (tgt) {
-          const vid = getCurrentVideoId();
-          if (vid) userManuallyToggledCcVids.add(vid);
-        }
-      } catch (err) {}
     }, true);
   });
 
@@ -166,29 +184,7 @@
       background: #000 !important;
     }
 
-    /* Make YouTube's built-in subtitles noticeably smaller than Sinhala CC */
-    .ytp-caption-segment,
-    .captions-text .ytp-caption-segment {
-      font-size: 11px !important;
-      line-height: 1.22 !important;
-      padding: 1px 4px !important;
-    }
-    .html5-video-player.ytp-fullscreen .ytp-caption-segment,
-    :fullscreen .ytp-caption-segment {
-      font-size: 13px !important;
-      line-height: 1.25 !important;
-    }
-    .ytp-caption-window-container .caption-window {
-      margin-bottom: 6px !important;
-    }
-
     /* Hide YouTube's original wordmark SVGs once Killer X YT brand is attached */
-    .kx-brand-host {
-      pointer-events: auto !important;
-      position: relative !important;
-      z-index: 60 !important;
-      cursor: pointer !important;
-    }
     .kx-brand-host > *:not(#kx-brand-badge) {
       display: none !important;
     }
@@ -196,17 +192,11 @@
       display: inline-flex !important;
       align-items: center !important;
       gap: 6px !important;
-      padding: 4px 8px 4px 2px !important;
+      padding: 2px 4px 2px 2px !important;
       text-decoration: none !important;
       cursor: pointer !important;
-      pointer-events: auto !important;
-      position: relative !important;
-      z-index: 65 !important;
       flex-shrink: 0 !important;
       white-space: nowrap !important;
-    }
-    #kx-brand-badge * {
-      pointer-events: none !important;
     }
     .kx-brand-icon {
       display: inline-flex !important;
@@ -330,6 +320,12 @@
     ytm-promoted-sparkles-text-search-renderer,
     ytm-companion-ad-renderer,
     ytm-statement-banner-renderer,
+    ytm-ad-slot-renderer,
+    ytm-in-feed-ad-layout-renderer,
+    ytm-brand-video-singleton-renderer,
+    ytm-merch-shelf-renderer,
+    ytm-reel-video-renderer:has(ytm-ad-slot-renderer),
+    ytm-reel-video-renderer:has(ad-slot-renderer),
     ad-slot-renderer,
     .ad-container,
     .ytp-ad-overlay-container,
@@ -399,102 +395,9 @@
     } catch (e) {}
   }
 
-  let lastHomeNavMs = 0;
-  function goToYouTubeHomeNow() {
-    const now = Date.now();
-    if (now - lastHomeNavMs < 500) return;
-    lastHomeNavMs = now;
-
-    const onHome = location.pathname === "/" && !location.search.includes("v=") && !location.search.includes("search_query=");
-    if (onHome && window.scrollY > 80) {
-      try {
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      } catch (e) {
-        window.scrollTo(0, 0);
-      }
-      return;
-    }
-
-    const beforeHref = location.href;
-    try {
-      window.location.assign("https://m.youtube.com/");
-    } catch (e) {
-      postBg({ type: "uiAction", action: "goHome" });
-      return;
-    }
-
-    // Safety fallback via native MainActivity if SPA blocked same-origin assign
-    setTimeout(() => {
-      if (location.href === beforeHref && !onHome) {
-        postBg({ type: "uiAction", action: "goHome" });
-      }
-    }, 300);
-  }
-
-  // Document-level capture listener (works even if YouTube puts disabled button / overlay above the logo!)
-  let brandTouchStartX = 0;
-  let brandTouchStartY = 0;
-  let brandTouchHit = false;
-
-  function isPointOnBrandBadge(x, y) {
-    const badge = document.getElementById("kx-brand-badge");
-    if (!badge || !badge.isConnected) return false;
-    try {
-      const r = badge.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0) return false;
-      return x >= r.left - 8 && x <= r.right + 8 && y >= r.top - 8 && y <= r.bottom + 8;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  document.addEventListener("touchstart", (e) => {
-    try {
-      const t = e.changedTouches && e.changedTouches[0];
-      if (!t) return;
-      brandTouchStartX = t.clientX;
-      brandTouchStartY = t.clientY;
-      brandTouchHit =
-        !!(e.target && e.target.closest && e.target.closest("#kx-brand-badge, .kx-brand-host")) ||
-        isPointOnBrandBadge(t.clientX, t.clientY);
-    } catch (err) {
-      brandTouchHit = false;
-    }
-  }, true);
-
-  document.addEventListener("touchend", (e) => {
-    if (!brandTouchHit) return;
-    brandTouchHit = false;
-    try {
-      const t = e.changedTouches && e.changedTouches[0];
-      if (!t) return;
-      const dx = Math.abs(t.clientX - brandTouchStartX);
-      const dy = Math.abs(t.clientY - brandTouchStartY);
-      if (dx < 18 && dy < 18) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        goToYouTubeHomeNow();
-      }
-    } catch (err) {}
-  }, true);
-
-  document.addEventListener("click", (e) => {
-    try {
-      const hitTarget = !!(e.target && e.target.closest && e.target.closest("#kx-brand-badge, .kx-brand-host"));
-      const hitRect = typeof e.clientX === "number" && isPointOnBrandBadge(e.clientX, e.clientY);
-      if (hitTarget || hitRect) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        goToYouTubeHomeNow();
-      }
-    } catch (err) {}
-  }, true);
-
   function createKillerXBrandBadge() {
     const badge = document.createElement("div");
     badge.id = "kx-brand-badge";
-    badge.setAttribute("role", "button");
-    badge.setAttribute("aria-label", "Killer X YT Home");
 
     const iconBox = document.createElement("span");
     iconBox.className = "kx-brand-icon";
@@ -525,15 +428,11 @@
 
       // Find YouTube's top-left home logo container
       const logoHost = header.querySelector(
-        "button.mobile-topbar-header-endpoint, a.mobile-topbar-header-endpoint, ytm-home-logo, #home-icon, [aria-label='YouTube Home'], [aria-label*='YouTube']"
+        "ytm-home-logo, #home-icon, button.mobile-topbar-header-endpoint, a.mobile-topbar-header-endpoint, [aria-label='YouTube Home'], [aria-label*='YouTube']"
       );
 
       if (logoHost) {
         logoHost.classList.add("kx-brand-host");
-        if (logoHost.hasAttribute("disabled")) logoHost.removeAttribute("disabled");
-        if (logoHost.parentElement && logoHost.parentElement.hasAttribute("disabled")) {
-          logoHost.parentElement.removeAttribute("disabled");
-        }
         if (!logoHost.querySelector("#kx-brand-badge")) {
           logoHost.appendChild(createKillerXBrandBadge());
         }
@@ -765,6 +664,20 @@
       wasMutedByAd = false;
     }
 
+    // Auto-skip sponsored YouTube Shorts slides if one ever slips past JSON pruning
+    if (location.pathname.startsWith("/shorts/")) {
+      const activeShortAd = document.querySelector(
+        "ytm-reel-video-renderer[is-active] ad-slot-renderer, ytm-reel-video-renderer[is-active] ytm-ad-slot-renderer, .reel-video-in-sequence[is-active] ad-slot-renderer"
+      );
+      if (activeShortAd) {
+        const nextShortBtn = document.querySelector("button[aria-label*='Next video'], #navigation-button-down button");
+        if (nextShortBtn) {
+          nextShortBtn.click();
+          postBg({ type: "adBlocked" });
+        }
+      }
+    }
+
     document.querySelectorAll("ytd-enforcement-message-view-model, tp-yt-paper-dialog, ytm-upsell-dialog-renderer").forEach((dlg) => {
       const txt = (dlg.innerText || "").toLowerCase();
       if (txt.includes("ad blocker") || txt.includes("open app") || txt.includes("youtube premium")) {
@@ -937,11 +850,6 @@
   let translatedLineCount = 0;
   let observedCaptionRoot = null;
   let captionObserver = null;
-  const ccEnableTriedVids = new Set();
-  const ccCycleTriedVids = new Set();
-  const userManuallyToggledCcVids = new Set();
-  let ccWatchStartMs = 0;
-  let ccRenderedForCurrentVid = false;
 
   function cachePut(orig, si) {
     if (!orig || !si) return;
@@ -1024,7 +932,6 @@
       return;
     }
 
-    ccRenderedForCurrentVid = true;
     lastNonEmptyCaptionMs = now;
     if (clean === lastSeenRawText) return;
     lastSeenRawText = clean;
@@ -1071,95 +978,6 @@
     } catch (e) {}
   }
 
-  // Auto-kickstart YouTube's CC module on new videos so BOTH YouTube CC & Sinhala CC work immediately
-  // without the user manually turning CC OFF and back ON!
-  function kickstartYouTubeCaptions() {
-    if (!config.ccEnabled) return;
-    const vid = getCurrentVideoId();
-    if (!vid) return;
-    if (ccRenderedForCurrentVid || userManuallyToggledCcVids.has(vid)) return;
-    if (readVisibleYouTubeCaption()) {
-      ccRenderedForCurrentVid = true;
-      return;
-    }
-
-    const v = getMainVideo();
-    if (!v || v.paused || v.ended || v.readyState < 2 || v.currentTime < 0.35) return;
-
-    // Ignore ads while an ad is playing
-    const playerEl = document.querySelector(".html5-video-player");
-    if (playerEl && (playerEl.classList.contains("ad-showing") || playerEl.classList.contains("ad-interrupting"))) {
-      return;
-    }
-
-    const now = Date.now();
-    if (ccWatchStartMs === 0) ccWatchStartMs = now;
-    const elapsed = now - ccWatchStartMs;
-
-    const ccBtn = document.querySelector(".ytp-subtitles-button, button.ytm-closed-captioning-button");
-    const player = playerEl ? (playerEl.wrappedJSObject || playerEl) : null;
-
-    // Step 1 (~450ms): Wake YouTube captions module & turn CC ON if it is currently OFF
-    if (!ccEnableTriedVids.has(vid) && elapsed >= 450) {
-      ccEnableTriedVids.add(vid);
-      try {
-        if (player && typeof player.loadModule === "function") {
-          player.loadModule("captions");
-        }
-        if (player && typeof player.toggleSubtitlesOn === "function") {
-          player.toggleSubtitlesOn();
-        }
-      } catch (e) {}
-
-      if (ccBtn && ccBtn.getAttribute("aria-pressed") === "false") {
-        try { ccBtn.click(); } catch (e) {}
-      }
-      ensureCaptionObserver();
-      return;
-    }
-
-    // Step 2 (~2.0s): If YouTube CC is stuck ON from previous video and still not rendering segments,
-    // automatically perform ONE clean OFF -> ON cycle!
-    if (!ccCycleTriedVids.has(vid) && elapsed >= 2000) {
-      ccCycleTriedVids.add(vid);
-      if (readVisibleYouTubeCaption()) {
-        ccRenderedForCurrentVid = true;
-        return;
-      }
-
-      if (ccBtn) {
-        const pressed = ccBtn.getAttribute("aria-pressed");
-        if (pressed === "true") {
-          try { ccBtn.click(); } catch (e) {}
-          setTimeout(() => {
-            if (getCurrentVideoId() === vid && !userManuallyToggledCcVids.has(vid)) {
-              const btn2 = document.querySelector(".ytp-subtitles-button, button.ytm-closed-captioning-button");
-              if (btn2 && btn2.getAttribute("aria-pressed") === "false") {
-                try { btn2.click(); } catch (e) {}
-              }
-              ensureCaptionObserver();
-            }
-          }, 220);
-        } else if (pressed === "false") {
-          try { ccBtn.click(); } catch (e) {}
-        }
-      } else if (player && typeof player.toggleSubtitles === "function") {
-        try {
-          player.toggleSubtitles();
-          setTimeout(() => {
-            if (getCurrentVideoId() === vid && !userManuallyToggledCcVids.has(vid)) {
-              try {
-                if (typeof player.toggleSubtitlesOn === "function") player.toggleSubtitlesOn();
-                else player.toggleSubtitles();
-              } catch (e) {}
-              ensureCaptionObserver();
-            }
-          }, 220);
-        } catch (e) {}
-      }
-    }
-  }
-
   function checkNavigation() {
     const vid = getCurrentVideoId();
     if (vid !== lastActiveVideoId) {
@@ -1168,11 +986,6 @@
       lastShownSi = "";
       lastNonEmptyCaptionMs = 0;
       translatedLineCount = 0;
-      ccWatchStartMs = 0;
-      ccRenderedForCurrentVid = false;
-      ccEnableTriedVids.delete(vid);
-      ccCycleTriedVids.delete(vid);
-      userManuallyToggledCcVids.delete(vid);
       userPaused = false;
       if (debounceTimer) {
         clearTimeout(debounceTimer);
@@ -1199,6 +1012,11 @@
     if (!msg || typeof msg !== "object") return;
     if (msg.type === "config" && msg.config) {
       config = Object.assign(config, msg.config);
+      try {
+        if (document.documentElement) {
+          document.documentElement.dataset.kxAdShield = config.adShield ? "1" : "0";
+        }
+      } catch (e) {}
       ensureStyles();
       updateControlButtonsAppearance();
       if (!config.ccEnabled) {
@@ -1238,8 +1056,7 @@
   setInterval(checkNavigation, 300);
   setInterval(ensureCaptionObserver, 1000);
   setInterval(attachAntiAutoPauseGuard, 500);
-  setInterval(skipYouTubeAds, 250);
+  setInterval(skipYouTubeAds, 120);
   setInterval(reportMediaState, 500);
-  setInterval(kickstartYouTubeCaptions, 450);
   setInterval(scanYouTubeCaptions, 100);
 })();

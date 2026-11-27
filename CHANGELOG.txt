@@ -1,6 +1,4 @@
 Killer X YT v2.8 Update:
-- Auto-Start YouTube & Sinhala CC: No longer need to manually turn YouTube CC OFF and ON for subtitles to appear!
-- Tap "Killer X YT" logo at top-left to jump straight to YouTube Home
-- Compact YouTube subtitles: Made native YouTube captions smaller than Sinhala CC
-- New Subtitle Box Darkness slider (0% - 100%) in CC Settings to adjust or hide the black box behind Sinhala text
-- Added VPN-safe Edge AI translator fallback (prevents HTTP 429 on VPNs)
+- NEW Brave-Grade Zero-Delay YouTube AdBlock Engine!
+- Strips adPlacements, playerAds & adSlots directly from YouTube player JSON (Network StreamFilter + In-Page Scriptlet) so ads NEVER load or buffer before your video starts!
+- Blocks mid-roll ad_break requests, Home/Search/Shorts sponsored ads & anti-adblock popups cleanly

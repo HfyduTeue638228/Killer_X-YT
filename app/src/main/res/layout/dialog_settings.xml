@@ -65,7 +65,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:buttonTint="@color/killer_red"
-            android:text="Block All Video &amp; Banner Ads"
+            android:text="Brave-Grade AdBlocker (Zero Ad Load)"
             android:textColor="@color/text_primary" />
 
         <TextView
@@ -83,24 +83,6 @@
             android:layout_height="wrap_content"
             android:max="22"
             android:progress="6"
-            android:progressTint="@color/killer_red"
-            android:thumbTint="@color/killer_red" />
-
-        <TextView
-            android:id="@+id/tvBgOpacityLabel"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Subtitle Box Darkness: 85%"
-            android:textColor="@color/text_primary"
-            android:textSize="13sp" />
-
-        <SeekBar
-            android:id="@+id/sbBgOpacity"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:max="100"
-            android:progress="85"
             android:progressTint="@color/killer_red"
             android:thumbTint="@color/killer_red" />
 

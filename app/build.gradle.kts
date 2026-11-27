@@ -11,8 +11,8 @@ android {
         applicationId = "com.killerx.yt"
         minSdk = 24
         targetSdk = 35
-        versionCode = 12
-        versionName = "2.8.1"
+        versionCode = 11
+        versionName = "2.8"
 
         ndk {
             abiFilters += listOf("arm64-v8a")

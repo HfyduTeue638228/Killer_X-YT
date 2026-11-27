@@ -14,11 +14,7 @@ let lastPongTime = 0;
 const contentPorts = new Set();
 const translateCache = new Map();
 const inflightTranslates = new Map();
-const providerCooldownUntil = new Map();
 const MAX_CACHE_SIZE = 3000;
-
-let edgeAuthToken = "";
-let edgeAuthExpiresAt = 0;
 
 function applyConfig(msg) {
   if (!msg || typeof msg !== "object") return;
@@ -139,7 +135,7 @@ setInterval(() => {
 }, 2500);
 
 // =========================================================================
-// 1. REAL FIREFOX NETWORK AD BLOCKER (Never touches YouTube captions or translators!)
+// 1. BRAVE-GRADE NETWORK AD BLOCKER + C++ STREAMFILTER JSON PRUNER
 // =========================================================================
 const AD_HOSTS = new Set([
   "doubleclick.net",
@@ -150,7 +146,12 @@ const AD_HOSTS = new Set([
   "googletagservices.com",
   "adservice.google.com",
   "pagead2.googlesyndication.com",
+  "tpc.googlesyndication.com",
+  "ade.googlesyndication.com",
+  "fundingchoicesmessages.google.com",
   "imasdk.googleapis.com",
+  "2mdn.net",
+  "ads.youtube.com",
   "amazon-adsystem.com",
   "adnxs.com",
   "criteo.com",
@@ -173,18 +174,19 @@ const NEVER_BLOCK_HOSTS = [
   "myaccount.google.com",
   "ssl.gstatic.com",
   "recaptcha.net",
+  "jnn-pa.googleapis.com",
   "googlevideo.com",
   "ytimg.com",
   "ggpht.com",
   "googleusercontent.com",
   "translate.googleapis.com",
   "clients5.google.com",
+  "api.mymemory.translated.net",
   "edge.microsoft.com",
-  "api-edge.cognitive.microsofttranslator.com",
-  "api.mymemory.translated.net"
+  "api-edge.cognitive.microsofttranslator.com"
 ];
 
-const AD_PATH_RE = /(\/pagead\/|\/api\/stats\/ads|\/ptracking\?|\/youtubei\/v1\/log_event|\/adserver\/|\/ads\/vast|\/vast\.xml)/i;
+const AD_PATH_RE = /(\/pagead\/|\/api\/stats\/ads|\/api\/stats\/atr|\/ptracking\?|\/pcs\/activeview|\/ad_data_204|\/get_midroll_info|\/youtubei\/v1\/ad_break|\/youtubei\/v1\/log_event|\/adserver\/|\/ads\/vast|\/vast\.xml)/i;
 
 function isAdHost(hostname) {
   let cur = hostname.toLowerCase();
@@ -200,13 +202,108 @@ function isAdHost(hostname) {
   return false;
 }
 
+const STREAM_AD_KEYS = [
+  "adPlacements",
+  "playerAds",
+  "adSlots",
+  "adBreakHeartbeatParams",
+  "adBreakParams",
+  "adSafetyReason"
+];
+
+function attachPlayerJsonPruner(requestId) {
+  try {
+    if (typeof browser.webRequest.filterResponseData !== "function") return;
+    const filter = browser.webRequest.filterResponseData(requestId);
+    const chunks = [];
+    let totalLen = 0;
+
+    filter.ondata = (event) => {
+      const arr = new Uint8Array(event.data);
+      chunks.push(arr);
+      totalLen += arr.byteLength;
+    };
+
+    filter.onstop = () => {
+      try {
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (let i = 0; i < chunks.length; i++) {
+          merged.set(chunks[i], offset);
+          offset += chunks[i].byteLength;
+        }
+
+        const rawStr = new TextDecoder("utf-8").decode(merged);
+        if (
+          rawStr.length > 40 &&
+          rawStr.trimStart().startsWith("{") &&
+          (rawStr.includes("adPlacements") ||
+            rawStr.includes("playerAds") ||
+            rawStr.includes("adSlots") ||
+            rawStr.includes("adBreakHeartbeatParams"))
+        ) {
+          const obj = JSON.parse(rawStr);
+          let removed = 0;
+          for (let i = 0; i < STREAM_AD_KEYS.length; i++) {
+            const k = STREAM_AD_KEYS[i];
+            if (k in obj) {
+              delete obj[k];
+              removed++;
+            }
+          }
+          if (obj.playerResponse && typeof obj.playerResponse === "object") {
+            for (let i = 0; i < STREAM_AD_KEYS.length; i++) {
+              const k = STREAM_AD_KEYS[i];
+              if (k in obj.playerResponse) {
+                delete obj.playerResponse[k];
+                removed++;
+              }
+            }
+          }
+          if (removed > 0) {
+            const prunedBytes = new TextEncoder().encode(JSON.stringify(obj));
+            filter.write(prunedBytes);
+            filter.close();
+            sendToNative({ type: "adBlocked" });
+            return;
+          }
+        }
+
+        // Untouched passthrough if no ads found
+        filter.write(merged);
+        filter.close();
+      } catch (e) {
+        // Strict safety fallback: write exact original chunks untouched!
+        try {
+          for (let i = 0; i < chunks.length; i++) {
+            filter.write(chunks[i]);
+          }
+          filter.close();
+        } catch (e2) {}
+      }
+    };
+
+    filter.onerror = () => {
+      try { filter.disconnect(); } catch (e) {}
+    };
+  } catch (e) {}
+}
+
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (!config.adShield) return {};
     if (details.type === "main_frame") return {};
     const url = details.url || "";
     if (!url.startsWith("http")) return {};
-    if (url.includes("/api/timedtext")) return {};
+
+    // NEVER touch captions or PO token attestation
+    if (url.includes("/api/timedtext") || url.includes("/youtubei/v1/att/")) return {};
+
+    // Prune YouTube /youtubei/v1/player JSON directly at the C++ network layer (0ms ad load!)
+    if (url.includes("youtube.com/youtubei/v1/player")) {
+      attachPlayerJsonPruner(details.requestId);
+      return {};
+    }
 
     try {
       const parsed = new URL(url);
@@ -224,7 +321,7 @@ browser.webRequest.onBeforeRequest.addListener(
 );
 
 // =========================================================================
-// 2. FAST UNIVERSAL SINHALA TRANSLATOR (Google GTX + Clients5 + Edge AI VPN-Safe + MyMemory)
+// 2. ULTRA-FAST UNIVERSAL SINHALA TRANSLATOR (ANY LANGUAGE -> SINHALA)
 // =========================================================================
 function putCache(key, val) {
   if (!key || !val) return;
@@ -235,31 +332,9 @@ function putCache(key, val) {
   translateCache.set(key, val);
 }
 
-function isOnCooldown(name) {
-  return Date.now() < (providerCooldownUntil.get(name) || 0);
-}
-
-function markCooldown(name, secs) {
-  providerCooldownUntil.set(name, Date.now() + secs * 1000);
-}
-
-async function fetchTimed(url, opts = {}, ms = 5500) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort("timeout"), ms);
-  try {
-    return await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
-  } finally {
-    clearTimeout(t);
-  }
-}
-
 async function translateGoogleGtx(text) {
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=si&dt=t&q=${encodeURIComponent(text)}`;
-  const res = await fetchTimed(url, {}, 5000);
-  if (res.status === 429 || res.status === 403) {
-    markCooldown("gtx", 90);
-    return "";
-  }
+  const res = await fetch(url);
   if (!res.ok) return "";
   const data = await res.json();
   if (Array.isArray(data) && Array.isArray(data[0])) {
@@ -270,11 +345,7 @@ async function translateGoogleGtx(text) {
 
 async function translateGoogleClients5(text) {
   const url = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=si&q=${encodeURIComponent(text)}`;
-  const res = await fetchTimed(url, {}, 5000);
-  if (res.status === 429 || res.status === 403) {
-    markCooldown("c5", 90);
-    return "";
-  }
+  const res = await fetch(url);
   if (!res.ok) return "";
   const data = await res.json();
   if (Array.isArray(data)) {
@@ -284,58 +355,11 @@ async function translateGoogleClients5(text) {
   return "";
 }
 
-async function getEdgeToken() {
-  const now = Date.now();
-  if (edgeAuthToken && now < edgeAuthExpiresAt - 30000) return edgeAuthToken;
-  const res = await fetchTimed("https://edge.microsoft.com/translate/auth", { cache: "no-store" }, 5500);
-  if (!res.ok) return "";
-  const tok = (await res.text()).trim();
-  if (tok && tok.split(".").length >= 2) {
-    edgeAuthToken = tok;
-    edgeAuthExpiresAt = now + 8 * 60 * 1000;
-    return tok;
-  }
-  return "";
-}
-
-async function translateEdgeAi(text) {
-  const tok = await getEdgeToken();
-  if (!tok) return "";
-  const res = await fetchTimed(
-    "https://api-edge.cognitive.microsofttranslator.com/translate?to=si&api-version=3.0",
-    {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + tok,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify([{ Text: text }])
-    },
-    6000
-  );
-  if (res.status === 401) {
-    edgeAuthToken = "";
-    edgeAuthExpiresAt = 0;
-  }
-  if (res.status === 429 || res.status === 403) {
-    markCooldown("edge", 90);
-    return "";
-  }
-  if (!res.ok) return "";
-  const data = await res.json();
-  const out = Array.isArray(data) && data[0] && Array.isArray(data[0].translations) && data[0].translations[0] && data[0].translations[0].text;
-  return (out || "").trim();
-}
-
 async function translateMyMemory(text) {
   const latinCount = (text.match(/[a-zA-Z]/g) || []).length;
   if (latinCount < text.length * 0.4) return "";
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|si`;
-  const res = await fetchTimed(url, {}, 5000);
-  if (res.status === 429) {
-    markCooldown("mm", 90);
-    return "";
-  }
+  const res = await fetch(url);
   if (!res.ok) return "";
   const data = await res.json();
   const out = data && data.responseData && data.responseData.translatedText;
@@ -353,23 +377,26 @@ function translateToSinhala(rawText) {
   if (inflightTranslates.has(clean)) return inflightTranslates.get(clean);
 
   const promise = (async () => {
-    const chain = [
-      ["gtx", translateGoogleGtx],
-      ["c5", translateGoogleClients5],
-      ["edge", translateEdgeAi],
-      ["mm", translateMyMemory]
-    ];
-
     let result = "";
-    for (const [id, fn] of chain) {
-      if (isOnCooldown(id)) continue;
+    try {
+      result = await translateGoogleGtx(clean);
+    } catch (e) {}
+
+    if (!result) {
       try {
-        result = await fn(clean);
-        if (result) break;
+        result = await translateGoogleClients5(clean);
       } catch (e) {}
     }
 
-    if (result) putCache(clean, result);
+    if (!result) {
+      try {
+        result = await translateMyMemory(clean);
+      } catch (e) {}
+    }
+
+    if (result) {
+      putCache(clean, result);
+    }
     return result;
   })().finally(() => {
     inflightTranslates.delete(clean);
